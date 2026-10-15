@@ -101,3 +101,9 @@ routes = [{ pattern = "post.example.com", custom_domain = true }]
 Wrangler 4.151.0 的 `deploy --dry-run` 打包通过；使用本地 workerd、D1、R2 绑定应用全部 9 个迁移，并验证首页、SPA 深层路由、API 健康检查、API 404 、root 初始化、D1 登录、R2 上传和读取成功。没有执行远程创建资源、远程迁移或生产发布。
 
 参考：[Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/)、[D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/)、[R2 Workers bindings](https://developers.cloudflare.com/r2/api/workers/workers-api-usage/)、[Workers limits](https://developers.cloudflare.com/workers/platform/limits/)。
+
+## 当前生产实例
+
+2026-10-16 已发布至 https://lunapost.sirrus.cc ，Worker 名称 `lunapost`，D1 为 `lunapost-db`，R2 为 `lunapost-files`。仓库配置已填写此实例的资源 ID 和域名；其他账户部署应先更换这些配置。9 个远程迁移已应用，JWT_SECRET / SETUP_TOKEN 已设置为 Worker secrets。
+
+已验证 HTTPS 首页、`/setup`、健康检查、D1 查询及 API 404。生产数据库为空，待站主创建 root；本机数据及文件尚未迁移。初始化令牌仅保存在部署机器的忽略目录 `data/lunapost-setup-token.txt`，不提交 Git。不要重复创建已有资源或重新生成当前 JWT 密钥。

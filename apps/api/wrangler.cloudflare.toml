@@ -1,9 +1,11 @@
-# Replace database_id after creating D1. Resource names must match your account.
+# Production: lunapost.sirrus.cc
 name = "lunapost"
 main = "src/cloudflare.ts"
 compatibility_date = "2026-10-14"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
+account_id = "e901e8131ab9cecbc41819e43dab6529"
+routes = [{ pattern = "lunapost.sirrus.cc", custom_domain = true }]
 
 [assets]
 directory = "../web/dist"
@@ -14,7 +16,7 @@ run_worker_first = ["/api/*", "/v2/*"]
 [[d1_databases]]
 binding = "DB"
 database_name = "lunapost-db"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "33e81416-7972-439b-a5a3-3579b3ed6908"
 migrations_dir = "../../migrations"
 
 [[r2_buckets]]
@@ -22,6 +24,7 @@ binding = "STORAGE"
 bucket_name = "lunapost-files"
 
 [vars]
+PUBLIC_BASE_URL = "https://lunapost.sirrus.cc"
 # Empty initial catalog. Existing business data is migrated separately.
 CATALOG_JSON = '{"schemaVersion":1,"catalogRevision":"cloudflare","generatedAt":"2026-10-16T00:00:00.000Z","projects":[]}'
 # Set PUBLIC_BASE_URL to the final HTTPS site URL if using a custom domain.
