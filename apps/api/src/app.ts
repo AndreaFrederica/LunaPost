@@ -582,9 +582,10 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     for (const summary of summaries) { const account = await store.getAccount(summary.id); if (account) accounts.push(account) }
     const organizations = await store.listOrganizations(); const organizationMembers = []
     for (const organization of organizations) organizationMembers.push({ organizationId: organization.id, members: await store.listOrganizationMembers(organization.id) })
+    const projects = (await getCatalogFor(c)).projects
     const projectMembers = []
-    for (const project of await store.listStoredProjects()) projectMembers.push({ projectId: project.id, members: await store.listProjectMembers(project.id) })
-    const bundle = { format: 'andrea-modpost-bundle', schemaVersion: 1, createdAt: new Date().toISOString(), source: 'root-export', siteSettings: await store.getAppSetting('site_settings'), accounts, projects: await store.listStoredProjects(), projectMembers, organizations, organizationMembers }
+    for (const project of projects) projectMembers.push({ projectId: project.id, members: await store.listProjectMembers(project.id) })
+    const bundle = { format: 'andrea-modpost-bundle', schemaVersion: 1, createdAt: new Date().toISOString(), source: 'root-export', siteSettings: await store.getAppSetting('site_settings'), accounts, projects, projectMembers, organizations, organizationMembers }
     c.header('Content-Type', 'application/json; charset=utf-8'); c.header('Content-Disposition', `attachment; filename="andrea-modpost-${new Date().toISOString().slice(0, 10)}.modpost.json"`); return c.json(bundle)
   })
 
@@ -592,7 +593,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const administrator = await getCurrentAccount(c); if (!administrator || administrator.role !== 'root') return c.json({ error: { code: 'FORBIDDEN', message: '只有 root 可以导出数据库快照' } }, 403)
     const body = await c.req.json().catch(() => null) as { password?: string } | null; if (!body?.password || body.password.length < 12) return c.json({ error: { code: 'INVALID_PASSWORD', message: '快照密码至少需要 12 个字符' } }, 400)
     const store = getAuthStore(c); const accounts = []; for (const summary of await store.listAccounts()) { const account = await store.getAccount(summary.id); if (account) accounts.push(account) }
-    const organizations = await store.listOrganizations(); const organizationMembers = []; for (const organization of organizations) organizationMembers.push({ organizationId: organization.id, members: await store.listOrganizationMembers(organization.id) }); const projects = await store.listStoredProjects(); const projectMembers = []; for (const project of projects) projectMembers.push({ projectId: project.id, members: await store.listProjectMembers(project.id) })
+    const organizations = await store.listOrganizations(); const organizationMembers = []; for (const organization of organizations) organizationMembers.push({ organizationId: organization.id, members: await store.listOrganizationMembers(organization.id) }); const projects = (await getCatalogFor(c)).projects; const projectMembers = []; for (const project of projects) projectMembers.push({ projectId: project.id, members: await store.listProjectMembers(project.id) })
     const bundle = { format: 'andrea-modpost-bundle', schemaVersion: 1, createdAt: new Date().toISOString(), source: 'root-export', siteSettings: await store.getAppSetting('site_settings'), accounts, projects, projectMembers, organizations, organizationMembers }
     return c.json(await encryptBundle(JSON.stringify(bundle), body.password))
   })
