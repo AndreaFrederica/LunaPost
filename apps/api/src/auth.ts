@@ -93,7 +93,11 @@ export interface AccountStore {
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-const iterations = 210_000
+// Cloudflare Workers rejects PBKDF2 iteration counts above 100,000 at the
+// WebCrypto boundary. Keep this within the platform limit so registration and
+// first-run setup work in Workers as well as Node. Existing hashes retain the
+// iteration count encoded in their own string during verification.
+const iterations = 100_000
 const defaultJwtSecret = 'development-only-change-this-jwt-secret'
 
 const toBase64Url = (bytes: Uint8Array) => {
