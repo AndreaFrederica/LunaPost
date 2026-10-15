@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.wrangler/
+.env
+.env.*
+!.env.example
+data/
+tmp/
+.pnpm-store/
+apps/web/public/catalog.json
+apps/web/public/api/
+.DS_Store
+.mimocode/
+*.log
+.dev.vars
+.dev.vars.*
+deploy/workerd/worker.js

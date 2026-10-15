@@ -1,0 +1,25 @@
+{
+  "name": "andrea-modpost",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "dev:web": "pnpm --filter @andrea/web dev",
+    "dev:api": "pnpm --filter @andrea/api dev",
+    "modpost:setup": "node scripts/init.mjs",
+    "modpost:db:init": "node scripts/init.mjs --non-interactive",
+    "build:workerd": "pnpm --filter @andrea/api build:workerd",
+    "catalog:build": "node scripts/build-catalog.mjs",
+    "build:static": "node scripts/build-static.mjs",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm --filter @andrea/contracts build && pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "build:cloudflare": "node scripts/build-cloudflare.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3"
+  },
+  "license": "MPL-2.0",
+  "author": "AndreaFrederica"
+}

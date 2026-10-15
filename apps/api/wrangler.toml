@@ -1,0 +1,6 @@
+name = "andrea-modpost-api"
+main = "src/worker.ts"
+compatibility_date = "2026-10-14"
+
+[observability]
+enabled = true

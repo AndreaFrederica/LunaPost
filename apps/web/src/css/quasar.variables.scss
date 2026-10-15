@@ -1,0 +1,10 @@
+// The site brand colour is #35d07f (hard-coded across app.scss). Quasar's default template blue was still driving every
+// primary control (checkbox/radio fill, toggle, focus ring, text-primary), which is why unchecked frames looked off-theme.
+$primary: #35d07f;
+$secondary: #20c997;
+$accent: #f59f00;
+$dark: #152033;
+$positive: #2f9e44;
+$negative: #e03131;
+$info: #1971c2;
+$warning: #f08c00;

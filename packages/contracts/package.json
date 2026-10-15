@@ -1,0 +1,31 @@
+{
+  "name": "@andrea/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./catalog": {
+      "types": "./dist/catalog.d.ts",
+      "import": "./dist/catalog.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "semver": "^7.8.5",
+    "smol-toml": "^1.9.1",
+    "zod": "^3.24.3"
+  },
+  "devDependencies": {
+    "@types/semver": "^7.8.0"
+  },
+  "license": "MPL-2.0",
+  "author": "AndreaFrederica"
+}
