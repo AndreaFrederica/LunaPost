@@ -1,5 +1,5 @@
 <template>
-  <q-page class="discover-page" :class="{ 'discover-page--own-scroll': discoverScrollMode === 'results' }">
+  <q-page class="discover-page">
     <div class="discover-shell">
       <section class="discover-heading">
         <div><div class="eyebrow">{{ t('discover.eyebrow', { site: siteName }) }}</div><h1>{{ t('discover.title') }}</h1><p>{{ t('discover.subtitle') }}</p></div>

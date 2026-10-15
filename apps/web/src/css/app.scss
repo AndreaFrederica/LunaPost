@@ -139,11 +139,7 @@ html[data-theme='light'] .project-status-banner { border-color: #f0d9a8; backgro
 /* The results-only scroll mode needs the available viewport height after the heading and tabs have
    been laid out. Keep that calculation in the layout tree instead of estimating those blocks with
    a fixed rem value (their height changes with wrapping, fonts and actions). */
-.discover-page--own-scroll { display: flex; flex-direction: column; min-height: calc(100vh - var(--header-height)); }
 .discover-shell { width: min(1320px, calc(100% - 40px)); margin: 0 auto; padding: 42px 0 0; }
-.discover-page--own-scroll .discover-shell { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
-.discover-page--own-scroll .discover-heading,
-.discover-page--own-scroll .type-tabs { flex: 0 0 auto; }
 .discover-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
 .discover-heading h1 { margin: 7px 0 8px; font-size: clamp(2rem, 4vw, 3.2rem); line-height: 1.08; font-weight: 800; letter-spacing: -.04em; }
 .discover-heading p { margin: 0; max-width: 680px; color: #a9adb8; font-size: 1rem; }
@@ -260,7 +256,7 @@ html[data-theme='light'] .view-toggle .q-btn.q-btn--active { color: #fff !import
 /* Opt-in scroll model ('results'): the two columns are given a height that is deliberately smaller than the remaining viewport, so
    only the result list scrolls inside them and the layout never reaches past the bottom of the screen. The page still scrolls
    normally above them; the default ('page') leaves the whole document scrolling. */
-.discover-layout--own-scroll { flex: 1 1 auto; min-height: 0; height: auto; align-items: stretch; }
+.discover-layout--own-scroll { --scrollable-height: calc(100vh - var(--header-height) - 9.5rem); height: var(--scrollable-height); min-height: 280px; align-items: stretch; }
 .discover-layout--own-scroll > .filter-panel { position: static; max-height: 100%; overflow-y: auto; }
 /* The card list is a sibling of .results-body, so it is the element that has to scroll; clipping the panel as well keeps anything
    from spilling past its border. */
@@ -283,7 +279,7 @@ html[data-theme='light'] .discover-layout--own-scroll .project-grid { scrollbar-
 html[data-theme='light'] .discover-layout--own-scroll > .filter-panel::-webkit-scrollbar-thumb,
 html[data-theme='light'] .discover-layout--own-scroll .project-list::-webkit-scrollbar-thumb,
 html[data-theme='light'] .discover-layout--own-scroll .project-grid::-webkit-scrollbar-thumb { background-color: #c8d0dc; }
-@media (max-width: 900px) { .discover-page--own-scroll, .discover-page--own-scroll .discover-shell { display: block; min-height: calc(100vh - var(--header-height)); } .discover-layout { grid-template-columns: 1fr; } .filter-panel { position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; align-content: start; } .filter-panel > :not(.filter-group) { grid-column: 1 / -1; } .filter-group { min-width: 0; margin-right: 0; } .filter-note { display: none; }
+@media (max-width: 900px) { .discover-layout { grid-template-columns: 1fr; } .filter-panel { position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; align-content: start; } .filter-panel > :not(.filter-group) { grid-column: 1 / -1; } .filter-group { min-width: 0; margin-right: 0; } .filter-note { display: none; }
   /* Below the two-column breakpoint an inner scroll area would fight the stacked layout, so the page scroll always wins there. */
   .discover-layout--own-scroll,
   .discover-layout--own-scroll > .filter-panel,
