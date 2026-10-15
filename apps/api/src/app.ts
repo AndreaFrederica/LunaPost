@@ -606,6 +606,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     if (body.accounts.length > 10_000 || body.projects.length > 10_000 || body.organizations.length > 2_000) return c.json({ error: { code: 'BUNDLE_TOO_LARGE', message: '快照数据量超过限制' } }, 413)
     const store = getAuthStore(c); let createdAccounts = 0; let updatedAccounts = 0; let createdProjects = 0; let updatedProjects = 0; let createdOrganizations = 0
     const accountIds = new Map<string, string>()
+    const organizationIds = new Map<string, string>()
     try {
       for (const item of body.accounts) {
         if (!item?.id || !item.email || !item.passwordHash) continue
@@ -616,8 +617,8 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
         else { const created = { id: String(item.id), email: String(item.email).toLowerCase(), passwordHash: String(item.passwordHash), createdAt: String(item.createdAt || new Date().toISOString()), verifiedAt: item.verifiedAt ?? null, role: ['user', 'developer', 'admin', 'root'].includes(item.role) ? item.role : 'user' as const, metadata: item.metadata ?? {} }; await store.createAccount(created); accountIds.set(String(item.id), created.id); createdAccounts += 1 }
       }
       for (const project of body.projects) { if (!project?.slug || !project.id) continue; const existing = await store.getStoredProject(String(project.slug)); await store.saveStoredProject(project); if (existing) updatedProjects += 1; else createdProjects += 1 }
-      for (const organization of body.organizations) { if (!organization?.id || !organization.slug) continue; const existing = await store.getOrganization(String(organization.slug)); if (!existing) { await store.createOrganization({ ...organization, ownerId: accountIds.get(organization.ownerId) ?? organization.ownerId }); createdOrganizations += 1 } }
-      for (const entry of Array.isArray(body.organizationMembers) ? body.organizationMembers : []) for (const member of Array.isArray(entry.members) ? entry.members : []) if (entry.organizationId && member.accountId) await store.setOrganizationMember(String(entry.organizationId), accountIds.get(String(member.accountId)) ?? String(member.accountId), member.role)
+      for (const organization of body.organizations) { if (!organization?.id || !organization.slug) continue; const existing = await store.getOrganization(String(organization.slug)); if (existing) organizationIds.set(String(organization.id), existing.id); else { await store.createOrganization({ ...organization, ownerId: accountIds.get(organization.ownerId) ?? organization.ownerId }); organizationIds.set(String(organization.id), String(organization.id)); createdOrganizations += 1 } }
+      for (const entry of Array.isArray(body.organizationMembers) ? body.organizationMembers : []) for (const member of Array.isArray(entry.members) ? entry.members : []) if (entry.organizationId && member.accountId) { const organizationId = organizationIds.get(String(entry.organizationId)); if (organizationId) await store.setOrganizationMember(organizationId, accountIds.get(String(member.accountId)) ?? String(member.accountId), member.role) }
       for (const entry of Array.isArray(body.projectMembers) ? body.projectMembers : []) for (const member of Array.isArray(entry.members) ? entry.members : []) if (entry.projectId && member.accountId) await store.setProjectMember(String(entry.projectId), accountIds.get(String(member.accountId)) ?? String(member.accountId), member.role)
       if (typeof body.siteSettings === 'string') await store.setAppSetting('site_settings', body.siteSettings)
       return c.json({ ok: true, summary: { createdAccounts, updatedAccounts, createdProjects, updatedProjects, createdOrganizations } })
