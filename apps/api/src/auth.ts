@@ -409,6 +409,11 @@ export class D1AccountStore implements AccountStore {
 
   async saveStoredProject(project: Project) {
     const now = new Date().toISOString()
+    // project_documents is the rich JSON source used by the catalog, while the
+    // normalized projects row backs foreign keys for members/invitations. Keep
+    // both representations in sync so D1 relationship imports can succeed.
+    const owner = project.ownerId ? await this.db.prepare('SELECT id FROM accounts WHERE id = ?').bind(project.ownerId).first<{ id: string }>() : null
+    await this.db.prepare('INSERT INTO projects (id, slug, title, type, description, owner_id, repository_url, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET id = excluded.id, title = excluded.title, type = excluded.type, description = excluded.description, owner_id = excluded.owner_id, repository_url = excluded.repository_url, status = excluded.status, updated_at = excluded.updated_at').bind(project.id, project.slug, project.title, project.type, project.description, owner?.id ?? null, project.repositoryUrl ?? null, project.status, now, now).run()
     await this.db.prepare('INSERT INTO project_documents (slug, project_json, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET project_json = excluded.project_json, updated_at = excluded.updated_at').bind(project.slug, JSON.stringify(project), now, now).run()
   }
 
