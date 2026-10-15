@@ -175,6 +175,9 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const account = await getCurrentAccount(c)
     c.header('Cache-Control', canPublishAccount(account) ? 'private, no-store' : 'public, max-age=60')
   }
+  // Engagement values are read from D1 on every request. Do not let a CDN or
+  // browser serve an older download/favorite count after a new event.
+  const setEngagementCacheControl = (c: any) => c.header('Cache-Control', 'no-store')
   const getStaffProjectsFor = async (c: any, catalog?: Catalog) => {
     const account = await requireStaff(c)
     const projects = (catalog ?? await getCatalogFor(c)).projects
@@ -1072,13 +1075,14 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const sort = c.req.query('sort') ?? 'relevance'
     const sorted = [...enriched].sort((a, b) => sort === 'downloads' ? b.downloads - a.downloads : sort === 'followers' ? b.followers - a.followers : sort === 'updated' ? (b.versions[0]?.publishedAt ?? '').localeCompare(a.versions[0]?.publishedAt ?? '') : Number(b.featured) - Number(a.featured))
     const offset = Math.max(0, Number(c.req.query('offset') ?? 0)); const limit = Math.min(100, Math.max(1, Number(c.req.query('limit') ?? 20)))
+    setEngagementCacheControl(c)
     return c.json({ projects: await enrichProjects(c, sorted.slice(offset, offset + limit)), total: sorted.length, offset, limit, catalogRevision: catalog.catalogRevision })
   })
 
   app.get('/api/v1/projects/:slug', async (c) => {
     const project = (await getVisibleCatalogFor(c)).projects.find((item) => item.slug === c.req.param('slug'))
     if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404)
-    await setCatalogCacheControl(c)
+    setEngagementCacheControl(c)
     return c.json(await enrichProject(c, project))
   })
 
