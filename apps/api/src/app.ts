@@ -605,16 +605,26 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     if (!body || body.format !== 'andrea-modpost-bundle' || body.schemaVersion !== 1 || !Array.isArray(body.accounts) || !Array.isArray(body.projects) || !Array.isArray(body.organizations)) return c.json({ error: { code: 'INVALID_BUNDLE', message: '快照格式或版本不受支持' } }, 400)
     if (body.accounts.length > 10_000 || body.projects.length > 10_000 || body.organizations.length > 2_000) return c.json({ error: { code: 'BUNDLE_TOO_LARGE', message: '快照数据量超过限制' } }, 413)
     const store = getAuthStore(c); let createdAccounts = 0; let updatedAccounts = 0; let createdProjects = 0; let updatedProjects = 0; let createdOrganizations = 0
-    for (const item of body.accounts) {
-      if (!item?.id || !item.email || !item.passwordHash) continue
-      const existing = await store.getAccount(String(item.id)); if (existing) { await store.updateAccountMetadata(existing.id, item.metadata ?? {}); await store.updateRole(existing.id, item.role ?? 'user'); await store.setAccountVerified(existing.id, item.verifiedAt ?? null); updatedAccounts += 1 } else { await store.createAccount({ id: String(item.id), email: String(item.email), passwordHash: String(item.passwordHash), createdAt: String(item.createdAt || new Date().toISOString()), verifiedAt: item.verifiedAt ?? null, role: ['user', 'developer', 'admin', 'root'].includes(item.role) ? item.role : 'user', metadata: item.metadata ?? {} }); createdAccounts += 1 }
+    const accountIds = new Map<string, string>()
+    try {
+      for (const item of body.accounts) {
+        if (!item?.id || !item.email || !item.passwordHash) continue
+        // A fresh Cloudflare instance already has the root created by /setup. Match
+        // by email as well as ID so importing that same account is idempotent.
+        const existing = await store.getAccount(String(item.id)) ?? await store.findAccountByEmail(String(item.email).toLowerCase())
+        if (existing) { accountIds.set(String(item.id), existing.id); await store.updateAccountMetadata(existing.id, item.metadata ?? {}); await store.updateRole(existing.id, item.role ?? 'user'); await store.setAccountVerified(existing.id, item.verifiedAt ?? null); updatedAccounts += 1 }
+        else { const created = { id: String(item.id), email: String(item.email).toLowerCase(), passwordHash: String(item.passwordHash), createdAt: String(item.createdAt || new Date().toISOString()), verifiedAt: item.verifiedAt ?? null, role: ['user', 'developer', 'admin', 'root'].includes(item.role) ? item.role : 'user' as const, metadata: item.metadata ?? {} }; await store.createAccount(created); accountIds.set(String(item.id), created.id); createdAccounts += 1 }
+      }
+      for (const project of body.projects) { if (!project?.slug || !project.id) continue; const existing = await store.getStoredProject(String(project.slug)); await store.saveStoredProject(project); if (existing) updatedProjects += 1; else createdProjects += 1 }
+      for (const organization of body.organizations) { if (!organization?.id || !organization.slug) continue; const existing = await store.getOrganization(String(organization.slug)); if (!existing) { await store.createOrganization({ ...organization, ownerId: accountIds.get(organization.ownerId) ?? organization.ownerId }); createdOrganizations += 1 } }
+      for (const entry of Array.isArray(body.organizationMembers) ? body.organizationMembers : []) for (const member of Array.isArray(entry.members) ? entry.members : []) if (entry.organizationId && member.accountId) await store.setOrganizationMember(String(entry.organizationId), accountIds.get(String(member.accountId)) ?? String(member.accountId), member.role)
+      for (const entry of Array.isArray(body.projectMembers) ? body.projectMembers : []) for (const member of Array.isArray(entry.members) ? entry.members : []) if (entry.projectId && member.accountId) await store.setProjectMember(String(entry.projectId), accountIds.get(String(member.accountId)) ?? String(member.accountId), member.role)
+      if (typeof body.siteSettings === 'string') await store.setAppSetting('site_settings', body.siteSettings)
+      return c.json({ ok: true, summary: { createdAccounts, updatedAccounts, createdProjects, updatedProjects, createdOrganizations } })
+    } catch (error) {
+      console.error('database import failed', error)
+      return c.json({ error: { code: 'IMPORT_FAILED', message: '快照导入失败，可能存在重复邮箱、组织成员或项目数据；已导入的项目可安全重复导入。' } }, 409)
     }
-    for (const project of body.projects) { if (!project?.slug || !project.id) continue; const existing = await store.getStoredProject(String(project.slug)); await store.saveStoredProject(project); if (existing) updatedProjects += 1; else createdProjects += 1 }
-    for (const organization of body.organizations) { if (!organization?.id || !organization.slug) continue; if (!await store.getOrganization(String(organization.slug))) { await store.createOrganization(organization); createdOrganizations += 1 } }
-    for (const entry of Array.isArray(body.organizationMembers) ? body.organizationMembers : []) for (const member of Array.isArray(entry.members) ? entry.members : []) if (entry.organizationId && member.accountId) await store.setOrganizationMember(String(entry.organizationId), String(member.accountId), member.role)
-    for (const entry of Array.isArray(body.projectMembers) ? body.projectMembers : []) for (const member of Array.isArray(entry.members) ? entry.members : []) if (entry.projectId && member.accountId) await store.setProjectMember(String(entry.projectId), String(member.accountId), member.role)
-    if (typeof body.siteSettings === 'string') await store.setAppSetting('site_settings', body.siteSettings)
-    return c.json({ ok: true, summary: { createdAccounts, updatedAccounts, createdProjects, updatedProjects, createdOrganizations } })
   })
 
   app.put('/api/v1/admin/settings', async (c) => {
