@@ -1,7 +1,7 @@
 import type { AccountMetadata, Organization, Project } from '@andrea/contracts'
 import { drizzle } from 'drizzle-orm/d1'
 import { and, desc, eq, isNull } from 'drizzle-orm'
-import { apiKeys as apiKeysTable } from './db/schema.js'
+import { accounts as accountsTable, apiKeys as apiKeysTable, sessions as sessionsTable, projectDocuments as projectDocumentsTable, projectFavorites as projectFavoritesTable, downloadEvents as downloadEventsTable } from './db/schema.js'
 
 export type AccountRole = 'user' | 'developer' | 'admin' | 'root'
 
@@ -359,36 +359,36 @@ export class D1AccountStore implements AccountStore {
   constructor(private readonly db: D1DatabaseLike) {}
 
   async countAccounts() {
-    const result = await this.db.prepare('SELECT COUNT(*) as count FROM accounts').bind().first<{ count: number | string }>()
-    return Number(result?.count ?? 0)
+    const rows = await drizzle(this.db as unknown as D1Database).select({ id: accountsTable.id }).from(accountsTable).all()
+    return rows.length
   }
 
   async listAccounts() {
-    const result = await this.db.prepare('SELECT id, email, created_at as createdAt, verified_at as verifiedAt, role FROM accounts ORDER BY created_at DESC').bind().all<AccountSummary>()
-    return result.results ?? []
+    return await drizzle(this.db as unknown as D1Database).select({ id: accountsTable.id, email: accountsTable.email, createdAt: accountsTable.createdAt, verifiedAt: accountsTable.verifiedAt, role: accountsTable.role }).from(accountsTable).orderBy(desc(accountsTable.createdAt)).all() as AccountSummary[]
   }
 
   async updateRole(id: string, role: AccountRole) {
     const existing = await this.getAccount(id)
     if (!existing) return false
-    await this.db.prepare('UPDATE accounts SET role = ? WHERE id = ?').bind(role, id).run()
-    return true
+    const result = await drizzle(this.db as unknown as D1Database).update(accountsTable).set({ role }).where(eq(accountsTable.id, id)).run()
+    return Number(result.meta?.changes ?? 0) > 0
   }
   async setAccountVerified(id: string, verifiedAt: string | null) {
-    const result = await this.db.prepare('UPDATE accounts SET verified_at = ? WHERE id = ?').bind(verifiedAt, id).run() as { meta?: { changes?: number } }
+    const result = await drizzle(this.db as unknown as D1Database).update(accountsTable).set({ verifiedAt }).where(eq(accountsTable.id, id)).run()
     return Number(result.meta?.changes ?? 0) > 0
   }
 
   async updateAccountMetadata(id: string, metadata: AccountMetadata) {
-    const result = await this.db.prepare('UPDATE accounts SET metadata_json = ? WHERE id = ?').bind(JSON.stringify(metadata), id).run() as { meta?: { changes?: number } }
+    const result = await drizzle(this.db as unknown as D1Database).update(accountsTable).set({ metadataJson: JSON.stringify(metadata) }).where(eq(accountsTable.id, id)).run()
     return Number(result.meta?.changes ?? 0) > 0
   }
 
   async deleteAccount(id: string) {
-    await this.db.prepare('DELETE FROM sessions WHERE account_id = ?').bind(id).run()
-    await this.db.prepare('DELETE FROM api_keys WHERE account_id = ?').bind(id).run()
-    await this.db.prepare('DELETE FROM project_favorites WHERE account_id = ?').bind(id).run()
-    const result = await this.db.prepare('DELETE FROM accounts WHERE id = ?').bind(id).run() as { meta?: { changes?: number } }
+    const orm = drizzle(this.db as unknown as D1Database)
+    await orm.delete(sessionsTable).where(eq(sessionsTable.accountId, id)).run()
+    await orm.delete(apiKeysTable).where(eq(apiKeysTable.accountId, id)).run()
+    await orm.delete(projectFavoritesTable).where(eq(projectFavoritesTable.accountId, id)).run()
+    const result = await orm.delete(accountsTable).where(eq(accountsTable.id, id)).run()
     return Number(result.meta?.changes ?? 0) > 0
   }
 
@@ -417,8 +417,8 @@ export class D1AccountStore implements AccountStore {
 
   async listStoredProjects() {
     try {
-      const result = await this.db.prepare('SELECT project_json as projectJson FROM project_documents ORDER BY updated_at DESC').bind().all<{ projectJson: string }>()
-      return (result.results ?? []).map((row) => JSON.parse(row.projectJson) as Project)
+      const rows = await drizzle(this.db as unknown as D1Database).select({ projectJson: projectDocumentsTable.projectJson }).from(projectDocumentsTable).orderBy(desc(projectDocumentsTable.updatedAt)).all()
+      return rows.map((row) => JSON.parse(row.projectJson) as Project)
     } catch {
       return []
     }
@@ -426,7 +426,7 @@ export class D1AccountStore implements AccountStore {
 
   async getStoredProject(slug: string) {
     try {
-      const row = await this.db.prepare('SELECT project_json as projectJson FROM project_documents WHERE slug = ?').bind(slug).first<{ projectJson: string }>()
+      const row = await drizzle(this.db as unknown as D1Database).select({ projectJson: projectDocumentsTable.projectJson }).from(projectDocumentsTable).where(eq(projectDocumentsTable.slug, slug)).get()
       return row ? JSON.parse(row.projectJson) as Project : null
     } catch {
       return null
@@ -556,25 +556,25 @@ export class D1AccountStore implements AccountStore {
   async saveMojangToken(accountId: string, ciphertext: string, updatedAt: string, expiresAt: string | null) { await this.db.prepare('INSERT INTO mojang_oauth_tokens (account_id, refresh_token_ciphertext, created_at, updated_at, expires_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET refresh_token_ciphertext = excluded.refresh_token_ciphertext, updated_at = excluded.updated_at, expires_at = excluded.expires_at').bind(accountId, ciphertext, updatedAt, updatedAt, expiresAt).run() }
 
   async findAccountByEmail(email: string) {
-    const account = await this.db.prepare('SELECT id, email, password_hash as passwordHash, created_at as createdAt, verified_at as verifiedAt, role, metadata_json as metadataJson FROM accounts WHERE email = ?').bind(email).first<AccountRecord & { metadataJson?: string }>()
+    const account = await drizzle(this.db as unknown as D1Database).select().from(accountsTable).where(eq(accountsTable.email, email)).get() as any
     return account ? { ...account, metadata: account.metadataJson ? JSON.parse(account.metadataJson) as AccountMetadata : {} } : null
   }
 
   async getAccount(id: string) {
-    const account = await this.db.prepare('SELECT id, email, password_hash as passwordHash, created_at as createdAt, verified_at as verifiedAt, role, metadata_json as metadataJson FROM accounts WHERE id = ?').bind(id).first<AccountRecord & { metadataJson?: string }>()
+    const account = await drizzle(this.db as unknown as D1Database).select().from(accountsTable).where(eq(accountsTable.id, id)).get() as any
     return account ? { ...account, metadata: account.metadataJson ? JSON.parse(account.metadataJson) as AccountMetadata : {} } : null
   }
 
   async createAccount(account: AccountRecord) {
-    await this.db.prepare('INSERT INTO accounts (id, email, password_hash, created_at, verified_at, role, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(account.id, account.email, account.passwordHash, account.createdAt, account.verifiedAt, account.role, JSON.stringify(account.metadata ?? {})).run()
+    await drizzle(this.db as unknown as D1Database).insert(accountsTable).values({ id: account.id, email: account.email, passwordHash: account.passwordHash, createdAt: account.createdAt, verifiedAt: account.verifiedAt, role: account.role, metadataJson: JSON.stringify(account.metadata ?? {}) }).run()
   }
 
   async createSession(session: SessionRecord) {
-    await this.db.prepare('INSERT INTO sessions (id_hash, account_id, expires_at) VALUES (?, ?, ?)').bind(session.idHash, session.accountId, session.expiresAt).run()
+    await drizzle(this.db as unknown as D1Database).insert(sessionsTable).values({ idHash: session.idHash, accountId: session.accountId, expiresAt: session.expiresAt }).run()
   }
 
   async getSession(idHash: string) {
-    const session = await this.db.prepare('SELECT id_hash as idHash, account_id as accountId, expires_at as expiresAt FROM sessions WHERE id_hash = ?').bind(idHash).first<SessionRecord>()
+    const session = await drizzle(this.db as unknown as D1Database).select().from(sessionsTable).where(eq(sessionsTable.idHash, idHash)).get() as SessionRecord | undefined
     if (!session || Date.parse(session.expiresAt) <= Date.now()) {
       if (session) await this.deleteSession(idHash)
       return null
@@ -583,7 +583,7 @@ export class D1AccountStore implements AccountStore {
   }
 
   async deleteSession(idHash: string) {
-    await this.db.prepare('DELETE FROM sessions WHERE id_hash = ?').bind(idHash).run()
+    await drizzle(this.db as unknown as D1Database).delete(sessionsTable).where(eq(sessionsTable.idHash, idHash)).run()
   }
 }
 
