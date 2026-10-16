@@ -50,6 +50,7 @@ export interface AccountStore {
   updateAccountMetadata(id: string, metadata: AccountMetadata): Promise<boolean>
   deleteAccount(id: string): Promise<boolean>
   listApiKeys(accountId: string): Promise<ApiKeySummary[]>
+  findApiKey(keyHash: string): Promise<ApiKeyRecord | null>
   createApiKey(key: ApiKeyRecord): Promise<void>
   revokeApiKey(accountId: string, id: string): Promise<boolean>
   listStoredProjects(): Promise<Project[]>
@@ -232,6 +233,10 @@ export class MemoryAccountStore implements AccountStore {
 
   async createApiKey(key: ApiKeyRecord) { this.apiKeys.set(key.id, key) }
 
+  async findApiKey(keyHash: string) {
+    return [...this.apiKeys.values()].find((key) => key.keyHash === keyHash && !key.revokedAt) ?? null
+  }
+
   async revokeApiKey(accountId: string, id: string) {
     const key = this.apiKeys.get(id)
     if (!key || key.accountId !== accountId || key.revokedAt) return false
@@ -382,6 +387,11 @@ export class D1AccountStore implements AccountStore {
 
   async createApiKey(key: ApiKeyRecord) {
     await this.db.prepare('INSERT INTO api_keys (id, account_id, key_hash, name, scopes, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(key.id, key.accountId, key.keyHash, key.name, JSON.stringify(key.scopes), key.createdAt, key.revokedAt).run()
+  }
+
+  async findApiKey(keyHash: string) {
+    const row = await this.db.prepare('SELECT id, account_id as accountId, key_hash as keyHash, name, scopes, created_at as createdAt, revoked_at as revokedAt FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL').bind(keyHash).first<{ id: string; accountId: string; keyHash: string; name: string; scopes: string; createdAt: string; revokedAt: string | null }>()
+    return row ? { ...row, scopes: JSON.parse(row.scopes) as string[] } : null
   }
 
   async revokeApiKey(accountId: string, id: string) {

@@ -3,7 +3,7 @@ import { externalDependencySchema, dependencyRequestSchema, resolveDependencies,
 import { cors } from 'hono/cors'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { Hono } from 'hono'
-import { accountMetadataSchema, catalogSchema, loginSchema, organizationSchema, projectSchema, registerSchema, setupInitializeSchema, type Catalog, type Organization, type Project, type Source, type SiteSettings, type ModerationPolicy } from '@andrea/contracts'
+import { accountMetadataSchema, catalogSchema, loginSchema, organizationSchema, projectSchema, registerSchema, setupInitializeSchema, versionSchema, type Catalog, type Organization, type Project, type Source, type SiteSettings, type ModerationPolicy } from '@andrea/contracts'
 import { exampleCatalog } from '@andrea/contracts/catalog'
 import { accountView, createJwt, D1AccountStore, hashApiKey, hashPassword, hashSessionId, MemoryAccountStore, type AccountRecord, type AccountRole, type AccountStore, type ProjectMemberRole, verifyJwt, verifyPassword } from './auth.js'
 import { registerModrinthCompat } from './modrinth-compat.js'
@@ -101,8 +101,17 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
   }
   const getCurrentAccount = async (c: any): Promise<AccountRecord | null> => {
     const store = getAuthStore(c)
-    const identity = await verifyJwt(getAccessToken(c), getJwtSecret(c))
+    const accessToken = getAccessToken(c)
+    const identity = await verifyJwt(accessToken, getJwtSecret(c))
     let account = identity?.sub ? await store.getAccount(identity.sub) : null
+    if (!account && accessToken && !identity) {
+      const apiKey = await store.findApiKey(await hashApiKey(accessToken))
+      if (apiKey) {
+        account = await store.getAccount(apiKey.accountId)
+        c.set('apiKeyScopes', apiKey.scopes)
+        c.set('apiKeyId', apiKey.id)
+      }
+    }
     if (!account) {
       const sessionId = getCookie(c, 'mp_session')
       if (sessionId) {
@@ -115,6 +124,13 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
       setCookie(c, 'mp_access', refreshed, { httpOnly: true, secure: new URL(c.req.url).protocol === 'https:', sameSite: 'Lax', path: '/', maxAge: 60 * 15 })
     }
     return account
+  }
+  const requireScope = async (c: any, scope: string) => {
+    const account = await getCurrentAccount(c)
+    if (!account) return { account: null, error: c.json({ error: { code: 'UNAUTHORIZED', message: '请提供有效的登录凭据' } }, 401) }
+    const scopes = c.get('apiKeyScopes') as string[] | undefined
+    if (scopes && !scopes.includes(scope) && !scopes.includes('*')) return { account: null, error: c.json({ error: { code: 'SCOPE_REQUIRED', message: `需要 ${scope} 权限` } }, 403) }
+    return { account, error: null }
   }
   const requireAdmin = async (c: any) => {
     const account = await getCurrentAccount(c)
@@ -752,7 +768,9 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
   })
 
   app.post('/api/v1/admin/projects', async (c) => {
-    const owner = await getCurrentAccount(c)
+    const auth = await requireScope(c, 'project:create')
+    const owner = auth.account
+    if (auth.error) return auth.error
     if (!owner) return c.json({ error: { code: 'UNAUTHORIZED', message: '请先登录' } }, 401)
     if (!canPublishAccount(owner)) return c.json({ error: { code: 'PUBLISHER_REQUIRED', message: '只有管理员或开发者可以发布项目' } }, 403)
     const parsed = projectSchema.safeParse(await c.req.json().catch(() => null))
@@ -783,7 +801,9 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
   })
 
   app.put('/api/v1/admin/projects/:slug', async (c) => {
-    const editor = await getCurrentAccount(c)
+    const auth = await requireScope(c, 'project:write')
+    const editor = auth.account
+    if (auth.error) return auth.error
     if (!editor || !canPublishAccount(editor)) return c.json({ error: { code: 'PUBLISHER_REQUIRED', message: '只有管理员或开发者可以编辑和发布项目' } }, 403)
     const parsed = projectSchema.safeParse(await c.req.json().catch(() => null))
     if (!parsed.success) return c.json({ error: { code: 'INVALID_PROJECT', message: '项目数据格式不正确', details: parsed.error.flatten() } }, 400)
@@ -979,6 +999,8 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
   app.post('/api/v1/projects/:slug/files', async (c) => {
     const project = (await getCatalogFor(c)).projects.find((item) => item.slug === c.req.param('slug'))
     if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404)
+    const auth = await requireScope(c, 'release:write')
+    if (auth.error) return auth.error
     if (!await canManageProject(c, project)) return c.json({ error: { code: 'FORBIDDEN', message: '没有文件上传权限' } }, 403)
     const storage = getStorage(c)
     if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: '文件存储未配置' } }, 503)
@@ -993,6 +1015,37 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     await storage.put(id, await upload.arrayBuffer(), upload.type || 'application/octet-stream', upload.name)
     const origin = new URL(c.env?.PUBLIC_BASE_URL || c.req.url).origin
     return c.json({ id, name: upload.name, size: upload.size, source: { id: `managed-${id}`, kind: 'managed', region: 'GLOBAL', url: new URL(`/api/v1/storage/${id}`, origin).href, priority: 100 } }, 201)
+  })
+
+  app.post('/api/v1/projects/:slug/publish', async (c) => {
+    const auth = await requireScope(c, 'release:write')
+    if (auth.error) return auth.error
+    const catalog = await getCatalogFor(c)
+    const current = catalog.projects.find((item) => item.slug === c.req.param('slug'))
+    if (!current) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404)
+    if (!await canManageProject(c, current)) return c.json({ error: { code: 'FORBIDDEN', message: '没有项目发布权限' } }, 403)
+    if (!await getAuthStore(c).getStoredProject(current.slug)) return c.json({ error: { code: 'STATIC_PROJECT', message: '静态项目必须通过 GitHub Catalog 发布' } }, 409)
+    const body = await c.req.json().catch(() => null) as { version?: unknown; replace?: boolean; source?: Record<string, unknown> } | null
+    const parsed = versionSchema.safeParse(body?.version)
+    if (!parsed.success) return c.json({ error: { code: 'INVALID_VERSION', message: '版本数据格式不正确', details: parsed.error.flatten() } }, 400)
+    const version = parsed.data
+    for (const file of version.files) {
+      for (const source of file.sources) {
+        if (source.kind !== 'github_release') continue
+        const host = new URL(source.url).hostname.toLowerCase()
+        if (!['github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com'].includes(host)) return c.json({ error: { code: 'INVALID_GITHUB_SOURCE', message: 'GitHub Release 源必须来自 GitHub 官方域名' } }, 400)
+      }
+    }
+    const duplicate = current.versions.find((item) => item.id === version.id)
+    if (duplicate && !body?.replace) return c.json({ error: { code: 'VERSION_EXISTS', message: '该版本已经存在' } }, 409)
+    const dependencyErrors = validateDependencies({ ...current, versions: [...current.versions.filter((item) => item.id !== version.id), version] }, await getVisibleCatalogFor(c))
+    if (dependencyErrors.length) return c.json({ error: { code: 'INVALID_DEPENDENCIES', message: dependencyErrors.join('; ') } }, 400)
+    const account = auth.account
+    const requiresReview = account?.role === 'developer' && (await getSiteSettings(c)).moderation.projectCreation !== 'none'
+    const reviewedVersion = requiresReview ? { ...version, status: 'draft' as const, files: version.files.map((file) => ({ ...file, reviewStatus: 'pending' as const })) } : version
+    const project = { ...current, versions: [...current.versions.filter((item) => item.id !== version.id), reviewedVersion] }
+    await getAuthStore(c).saveStoredProject(project)
+    return c.json({ releaseId: crypto.randomUUID(), project: project.slug, versionId: reviewedVersion.id, status: requiresReview ? 'pending_review' : 'published', version: reviewedVersion }, duplicate ? 200 : 201)
   })
 
   app.get('/api/v1/catalog', async (c) => {

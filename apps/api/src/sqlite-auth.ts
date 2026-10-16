@@ -153,6 +153,11 @@ export class SqliteAccountStore implements AccountStore {
     this.db.prepare('INSERT INTO api_keys (id, account_id, key_hash, name, scopes, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(key.id, key.accountId, key.keyHash, key.name, JSON.stringify(key.scopes), key.createdAt, key.revokedAt)
   }
 
+  async findApiKey(keyHash: string) {
+    const row = this.db.prepare('SELECT id, account_id as accountId, key_hash as keyHash, name, scopes, created_at as createdAt, revoked_at as revokedAt FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL').get(keyHash) as { id: string; accountId: string; keyHash: string; name: string; scopes: string; createdAt: string; revokedAt: string | null } | undefined
+    return row ? { ...row, scopes: JSON.parse(row.scopes) as string[] } : null
+  }
+
   async revokeApiKey(accountId: string, id: string) {
     const result = this.db.prepare('UPDATE api_keys SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL').run(new Date().toISOString(), id, accountId) as { changes?: number }
     return Number(result.changes ?? 0) > 0
