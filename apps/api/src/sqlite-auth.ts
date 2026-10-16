@@ -2,7 +2,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { AccountMetadata, Project } from '@andrea/contracts'
-import type { AccountRecord, AccountStore, AccountSummary, ApiKeyRecord, ApiKeySummary, DownloadEvent, ProjectEngagement, ProjectFavorite, ProjectInvitation, ProjectMember, ProjectMemberRole, SiteNotification, SessionRecord, DashboardStats } from './auth.js'
+import type { AccountRecord, AccountStore, AccountSummary, ApiKeyRecord, ApiKeySummary, DownloadEvent, ProjectEngagement, ProjectFavorite, ProjectInvitation, ProjectMember, ProjectMemberRole, SiteNotification, SessionRecord, DashboardStats, ProjectPublishToken } from './auth.js'
 import type { AccountRole, OrganizationMember, OrganizationMemberRole, OrganizationRecord } from './auth.js'
 
 export class SqliteAccountStore implements AccountStore {
@@ -35,6 +35,8 @@ export class SqliteAccountStore implements AccountStore {
         created_at TEXT NOT NULL,
         revoked_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS project_publish_tokens (id TEXT PRIMARY KEY, project_slug TEXT NOT NULL, account_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, name TEXT NOT NULL, scopes TEXT NOT NULL DEFAULT '["release:write"]', created_at TEXT NOT NULL, revoked_at TEXT);
+      CREATE TABLE IF NOT EXISTS publish_uploads (id TEXT PRIMARY KEY, project_slug TEXT NOT NULL, account_id TEXT NOT NULL, filename TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT, content_type TEXT NOT NULL, storage_key TEXT, multipart_id TEXT, status TEXT NOT NULL DEFAULT 'created', created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS project_documents (
         slug TEXT PRIMARY KEY,
         project_json TEXT NOT NULL,
@@ -157,6 +159,10 @@ export class SqliteAccountStore implements AccountStore {
     const row = this.db.prepare('SELECT id, account_id as accountId, key_hash as keyHash, name, scopes, created_at as createdAt, revoked_at as revokedAt FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL').get(keyHash) as { id: string; accountId: string; keyHash: string; name: string; scopes: string; createdAt: string; revokedAt: string | null } | undefined
     return row ? { ...row, scopes: JSON.parse(row.scopes) as string[] } : null
   }
+  async createProjectPublishToken(token: ProjectPublishToken) { this.db.prepare('INSERT INTO project_publish_tokens (id, project_slug, account_id, token_hash, name, scopes, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(token.id, token.projectSlug, token.accountId, token.tokenHash, token.name, JSON.stringify(token.scopes), token.createdAt, token.revokedAt) }
+  async findProjectPublishToken(tokenHash: string) { const row = this.db.prepare('SELECT id, project_slug as projectSlug, account_id as accountId, token_hash as tokenHash, name, scopes, created_at as createdAt, revoked_at as revokedAt FROM project_publish_tokens WHERE token_hash = ? AND revoked_at IS NULL').get(tokenHash) as any; return row ? { ...row, scopes: JSON.parse(row.scopes) as string[] } : null }
+  async listProjectPublishTokens(projectSlug: string) { const rows = this.db.prepare('SELECT id, project_slug as projectSlug, name, scopes, created_at as createdAt, revoked_at as revokedAt FROM project_publish_tokens WHERE project_slug = ? ORDER BY created_at DESC').all(projectSlug) as any[]; return rows.map((row) => ({ ...row, scopes: JSON.parse(row.scopes) })) }
+  async revokeProjectPublishToken(projectSlug: string, id: string) { const result = this.db.prepare('UPDATE project_publish_tokens SET revoked_at = ? WHERE id = ? AND project_slug = ? AND revoked_at IS NULL').run(new Date().toISOString(), id, projectSlug) as { changes?: number }; return Number(result.changes ?? 0) > 0 }
 
   async revokeApiKey(accountId: string, id: string) {
     const result = this.db.prepare('UPDATE api_keys SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL').run(new Date().toISOString(), id, accountId) as { changes?: number }

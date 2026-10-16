@@ -123,6 +123,14 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
         account = await store.getAccount(apiKey.accountId)
         c.set('apiKeyScopes', apiKey.scopes)
         c.set('apiKeyId', apiKey.id)
+      } else {
+        const publishToken = await store.findProjectPublishToken(await hashApiKey(accessToken))
+        if (publishToken) {
+          account = await store.getAccount(publishToken.accountId)
+          c.set('apiKeyScopes', publishToken.scopes)
+          c.set('apiKeyId', publishToken.id)
+          c.set('publishProjectSlug', publishToken.projectSlug)
+        }
       }
     }
     if (!account) {
@@ -1014,6 +1022,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404)
     const auth = await requireScope(c, 'release:write')
     if (auth.error) return auth.error
+    if ((c as any).get('publishProjectSlug') && (c as any).get('publishProjectSlug') !== project.slug) return c.json({ error: { code: 'PROJECT_SCOPE_REQUIRED', message: '发布令牌未绑定此项目' } }, 403)
     if (!await canManageProject(c, project)) return c.json({ error: { code: 'FORBIDDEN', message: apiT(c.req.header('accept-language'), 'apiErrors.fileUploadForbidden') } }, 403)
     const storage = getStorage(c)
     if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: apiT(c.req.header('accept-language'), 'apiErrors.storageNotConfigured') } }, 503)
@@ -1030,16 +1039,71 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     return c.json({ id, name: upload.name, size: upload.size, source: { id: `managed-${id}`, kind: 'managed', region: 'GLOBAL', url: new URL(`/api/v1/storage/${id}`, origin).href, priority: 100 } }, 201)
   })
 
+  app.post('/api/v1/publish/uploads', async (c) => {
+    const auth = await requireScope(c, 'release:write')
+    if (auth.error) return auth.error
+    const projectSlug = c.req.query('project')
+    if (!projectSlug || ((c as any).get('publishProjectSlug') && (c as any).get('publishProjectSlug') !== projectSlug)) return c.json({ error: { code: 'PROJECT_SCOPE_REQUIRED', message: '请提供匹配发布令牌的 project 参数' } }, 403)
+    const body = await c.req.json().catch(() => null) as { filename?: string; size?: number; sha256?: string; contentType?: string } | null
+    if (!body?.filename || !Number.isSafeInteger(body.size) || Number(body.size) < 0 || Number(body.size) > 512 * 1024 * 1024) return c.json({ error: { code: 'INVALID_UPLOAD', message: '文件名和大小不正确' } }, 400)
+    const storage = getStorage(c); if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: '文件存储未配置' } }, 503)
+    const id = crypto.randomUUID(); const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); const contentType = body.contentType || 'application/octet-stream'; const key = `publish/${projectSlug}/${id}/${body.filename}`
+    const multipartId = Number(body.size) > 100 * 1024 * 1024 && storage.createMultipart ? await storage.createMultipart(key, contentType, body.filename) : null
+    await c.env.DB?.prepare('INSERT INTO publish_uploads (id, project_slug, account_id, filename, size, sha256, content_type, storage_key, multipart_id, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, projectSlug, auth.account!.id, body.filename, Number(body.size), body.sha256 ?? null, contentType, key, multipartId, 'created', new Date().toISOString(), expiresAt).run()
+    const origin = new URL(c.env?.PUBLIC_BASE_URL || c.req.url).origin
+    return c.json({ uploadId: id, uploadUrl: new URL(`/api/v1/publish/uploads/${id}`, origin).href, method: 'PUT', expiresAt, partSize: multipartId ? 8 * 1024 * 1024 : null, completeUrl: multipartId ? new URL(`/api/v1/publish/uploads/${id}/complete`, origin).href : null }, 201)
+  })
+
+  app.put('/api/v1/publish/uploads/:id', async (c) => {
+    const auth = await requireScope(c, 'release:write'); if (auth.error) return auth.error
+    const row = await c.env.DB?.prepare('SELECT * FROM publish_uploads WHERE id = ? AND account_id = ?').bind(c.req.param('id'), auth.account!.id).first<any>()
+    if (!row || row.status !== 'created' || Date.parse(row.expires_at) < Date.now()) return c.json({ error: { code: 'UPLOAD_EXPIRED', message: '上传会话不存在或已过期' } }, 404)
+    const storage = getStorage(c); if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: '文件存储未配置' } }, 503)
+    const data = await c.req.arrayBuffer(); if (data.byteLength !== Number(row.size)) return c.json({ error: { code: 'SIZE_MISMATCH', message: '文件大小不匹配' } }, 422)
+    if (row.multipart_id) return c.json({ error: { code: 'MULTIPART_REQUIRED', message: '此会话需要分片上传' } }, 409)
+    await storage.put(row.storage_key, data, row.content_type, row.filename)
+    await c.env.DB?.prepare('UPDATE publish_uploads SET status = ? WHERE id = ?').bind('complete', row.id).run()
+    return c.json({ uploadId: row.id, status: 'complete', storageKey: row.storage_key })
+  })
+
+  app.put('/api/v1/publish/uploads/:id/parts/:part', async (c) => {
+    const auth = await requireScope(c, 'release:write'); if (auth.error) return auth.error
+    const row = await c.env.DB?.prepare('SELECT * FROM publish_uploads WHERE id = ? AND account_id = ?').bind(c.req.param('id'), auth.account!.id).first<any>()
+    const storage = getStorage(c); const part = Number(c.req.param('part'))
+    if (!row || row.status !== 'created' || !row.multipart_id || !storage?.uploadPart || !Number.isInteger(part) || part < 1 || part > 10000) return c.json({ error: { code: 'INVALID_PART', message: '分片上传会话或分片编号无效' } }, 400)
+    const etag = await storage.uploadPart(row.storage_key, row.multipart_id, part, await c.req.arrayBuffer())
+    return c.json({ part, etag })
+  })
+
+  app.post('/api/v1/publish/uploads/:id/complete', async (c) => {
+    const auth = await requireScope(c, 'release:write'); if (auth.error) return auth.error
+    const row = await c.env.DB?.prepare('SELECT * FROM publish_uploads WHERE id = ? AND account_id = ?').bind(c.req.param('id'), auth.account!.id).first<any>()
+    const storage = getStorage(c); const body = await c.req.json().catch(() => null) as { parts?: Array<{ partNumber?: number; etag?: string }> } | null
+    if (!row || row.status !== 'created' || !row.multipart_id || !storage?.completeMultipart || !body?.parts?.length) return c.json({ error: { code: 'INVALID_MULTIPART', message: '分片上传会话或分片列表无效' } }, 400)
+    await storage.completeMultipart(row.storage_key, row.multipart_id, body.parts.map((part) => ({ partNumber: Number(part.partNumber), etag: String(part.etag) })))
+    await c.env.DB?.prepare('UPDATE publish_uploads SET status = ? WHERE id = ?').bind('complete', row.id).run()
+    return c.json({ uploadId: row.id, status: 'complete', storageKey: row.storage_key })
+  })
+
   app.post('/api/v1/projects/:slug/publish', async (c) => {
     const auth = await requireScope(c, 'release:write')
     if (auth.error) return auth.error
     const catalog = await getCatalogFor(c)
     const current = catalog.projects.find((item) => item.slug === c.req.param('slug'))
     if (!current) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404)
+    if ((c as any).get('publishProjectSlug') && (c as any).get('publishProjectSlug') !== current.slug) return c.json({ error: { code: 'PROJECT_SCOPE_REQUIRED', message: '发布令牌未绑定此项目' } }, 403)
     if (!await canManageProject(c, current)) return c.json({ error: { code: 'FORBIDDEN', message: '没有项目发布权限' } }, 403)
     if (!await getAuthStore(c).getStoredProject(current.slug)) return c.json({ error: { code: 'STATIC_PROJECT', message: '静态项目必须通过 GitHub Catalog 发布' } }, 409)
-    const body = await c.req.json().catch(() => null) as { version?: unknown; replace?: boolean } | null
-    const parsed = versionSchema.safeParse(body?.version)
+    const body = await c.req.json().catch(() => null) as { version?: any; replace?: boolean } | null
+    const rawVersion = body?.version && typeof body.version === 'object' ? { ...body.version, files: Array.isArray(body.version.files) ? await Promise.all(body.version.files.map(async (raw: any) => {
+      if (!raw?.uploadId) return raw
+      const upload = await c.env.DB?.prepare('SELECT * FROM publish_uploads WHERE id = ? AND account_id = ? AND project_slug = ? AND status = ?').bind(raw.uploadId, auth.account!.id, current.slug, 'complete').first<any>()
+      if (!upload) return { ...raw, sources: [] }
+      const origin = new URL(c.env?.PUBLIC_BASE_URL || c.req.url).origin
+      const managed = { id: `managed-${upload.id}`, kind: 'managed', region: 'GLOBAL', url: new URL(`/api/v1/storage/${upload.storage_key}`, origin).href, priority: 50 }
+      return { ...raw, id: raw.id || `publish-${upload.id}`, name: raw.filename || upload.filename, size: Number(upload.size), sources: [...(Array.isArray(raw.sources) ? raw.sources : []), managed] }
+    })) : [] } : body?.version
+    const parsed = versionSchema.safeParse(rawVersion)
     if (!parsed.success) return c.json({ error: { code: 'INVALID_VERSION', message: '版本数据格式不正确', details: parsed.error.flatten() } }, 400)
     const version = parsed.data
     for (const file of version.files) for (const source of file.sources) {
@@ -1056,6 +1120,41 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const project = { ...current, versions: [...current.versions.filter((item) => item.id !== version.id), reviewedVersion] }
     await getAuthStore(c).saveStoredProject(project)
     return c.json({ releaseId: crypto.randomUUID(), project: project.slug, versionId: reviewedVersion.id, status: requiresReview ? 'pending_review' : 'published', version: reviewedVersion }, duplicate ? 200 : 201)
+  })
+
+  app.get('/api/v1/projects/:slug/publish-tokens', async (c) => {
+    const auth = await requireScope(c, 'project:write')
+    if (auth.error) return auth.error
+    const project = (await getCatalogFor(c)).projects.find((item) => item.slug === c.req.param('slug'))
+    if (!project || !await canAdminProject(c, project)) return c.json({ error: { code: 'FORBIDDEN', message: '没有管理发布令牌权限' } }, 403)
+    return c.json({ tokens: await getAuthStore(c).listProjectPublishTokens(project.slug) })
+  })
+
+  app.post('/api/v1/projects/:slug/publish-tokens', async (c) => {
+    const auth = await requireScope(c, 'project:write')
+    if (auth.error) return auth.error
+    const project = (await getCatalogFor(c)).projects.find((item) => item.slug === c.req.param('slug'))
+    if (!project || !await canAdminProject(c, project)) return c.json({ error: { code: 'FORBIDDEN', message: '没有创建发布令牌权限' } }, 403)
+    const body = await c.req.json().catch(() => null) as { name?: string; scopes?: unknown } | null
+    const name = body?.name?.trim()
+    if (!name || name.length > 80) return c.json({ error: { code: 'INVALID_INPUT', message: '令牌名称不能为空且不能超过 80 个字符' } }, 400)
+    const allowed = new Set(['project:read', 'release:write', 'release:publish'])
+    const scopes = Array.isArray(body?.scopes) ? body.scopes.filter((scope): scope is string => typeof scope === 'string' && allowed.has(scope)) : ['release:write']
+    const bytes = crypto.getRandomValues(new Uint8Array(32)); let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte)
+    const token = `lpt_${btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '')}`
+    const record = { id: crypto.randomUUID(), projectSlug: project.slug, accountId: auth.account!.id, tokenHash: await hashApiKey(token), name, scopes: scopes.length ? scopes : ['release:write'], createdAt: new Date().toISOString(), revokedAt: null }
+    await getAuthStore(c).createProjectPublishToken(record)
+    const { tokenHash: _hash, accountId: _account, ...summary } = record
+    return c.json({ token, tokenInfo: summary }, 201)
+  })
+
+  app.delete('/api/v1/projects/:slug/publish-tokens/:id', async (c) => {
+    const auth = await requireScope(c, 'project:write')
+    if (auth.error) return auth.error
+    const project = (await getCatalogFor(c)).projects.find((item) => item.slug === c.req.param('slug'))
+    if (!project || !await canAdminProject(c, project)) return c.json({ error: { code: 'FORBIDDEN', message: '没有吊销发布令牌权限' } }, 403)
+    if (!await getAuthStore(c).revokeProjectPublishToken(project.slug, c.req.param('id'))) return c.json({ error: { code: 'NOT_FOUND', message: '发布令牌不存在或已经吊销' } }, 404)
+    return c.json({ ok: true })
   })
 
   app.get('/api/v1/catalog', async (c) => {

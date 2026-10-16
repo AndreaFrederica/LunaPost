@@ -35,6 +35,7 @@ export type ApiKeyRecord = {
   revokedAt: string | null
 }
 export type ApiKeySummary = Omit<ApiKeyRecord, 'accountId' | 'keyHash'>
+export type ProjectPublishToken = { id: string; projectSlug: string; accountId: string; tokenHash: string; name: string; scopes: string[]; createdAt: string; revokedAt: string | null }
 export type ProjectMemberRole = 'owner' | 'admin' | 'editor' | 'reviewer' | 'member'
 export type ProjectMember = { projectId: string; accountId: string; email: string; role: ProjectMemberRole }
 export type ProjectInvitation = { id: string; projectId: string; projectSlug: string; inviterId: string; inviteeId: string | null; email: string; role: Exclude<ProjectMemberRole, 'owner'>; status: 'pending' | 'accepted' | 'declined'; createdAt: string }
@@ -54,6 +55,10 @@ export interface AccountStore {
   deleteAccount(id: string): Promise<boolean>
   listApiKeys(accountId: string): Promise<ApiKeySummary[]>
   findApiKey(keyHash: string): Promise<ApiKeyRecord | null>
+  createProjectPublishToken(token: ProjectPublishToken): Promise<void>
+  findProjectPublishToken(tokenHash: string): Promise<ProjectPublishToken | null>
+  listProjectPublishTokens(projectSlug: string): Promise<Array<Omit<ProjectPublishToken, 'tokenHash' | 'accountId'>>>
+  revokeProjectPublishToken(projectSlug: string, id: string): Promise<boolean>
   createApiKey(key: ApiKeyRecord): Promise<void>
   revokeApiKey(accountId: string, id: string): Promise<boolean>
   listStoredProjects(): Promise<Project[]>
@@ -239,6 +244,10 @@ export class MemoryAccountStore implements AccountStore {
   async findApiKey(keyHash: string) {
     return [...this.apiKeys.values()].find((key) => key.keyHash === keyHash && !key.revokedAt) ?? null
   }
+  async createProjectPublishToken(token: ProjectPublishToken) { this.apiKeys.set(`publish:${token.id}`, token as unknown as ApiKeyRecord) }
+  async findProjectPublishToken(tokenHash: string) { return [...this.apiKeys.values()].find((key) => key.keyHash === tokenHash && !key.revokedAt && key.id.startsWith('publish:')) as unknown as ProjectPublishToken ?? null }
+  async listProjectPublishTokens(projectSlug: string) { return ([...this.apiKeys.values()] as unknown as ProjectPublishToken[]).filter((key) => key.id.startsWith('publish:') && key.projectSlug === projectSlug).map(({ tokenHash: _tokenHash, accountId: _accountId, ...key }) => key) }
+  async revokeProjectPublishToken(projectSlug: string, id: string) { const key = this.apiKeys.get(`publish:${id}`) as unknown as ProjectPublishToken | undefined; if (!key || key.projectSlug !== projectSlug || key.revokedAt) return false; key.revokedAt = new Date().toISOString(); return true }
 
   async revokeApiKey(accountId: string, id: string) {
     const key = this.apiKeys.get(id)
@@ -396,6 +405,10 @@ export class D1AccountStore implements AccountStore {
     const row = await drizzle(this.db as unknown as D1Database).select().from(apiKeysTable).where(and(eq(apiKeysTable.keyHash, keyHash), isNull(apiKeysTable.revokedAt))).get()
     return row ? { ...row, scopes: JSON.parse(row.scopes) as string[] } : null
   }
+  async createProjectPublishToken(token: ProjectPublishToken) { await this.db.prepare('INSERT INTO project_publish_tokens (id, project_slug, account_id, token_hash, name, scopes, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(token.id, token.projectSlug, token.accountId, token.tokenHash, token.name, JSON.stringify(token.scopes), token.createdAt, token.revokedAt).run() }
+  async findProjectPublishToken(tokenHash: string) { const row = await this.db.prepare('SELECT id, project_slug as projectSlug, account_id as accountId, token_hash as tokenHash, name, scopes, created_at as createdAt, revoked_at as revokedAt FROM project_publish_tokens WHERE token_hash = ? AND revoked_at IS NULL').bind(tokenHash).first<any>(); return row ? { ...row, scopes: JSON.parse(row.scopes) as string[] } : null }
+  async listProjectPublishTokens(projectSlug: string) { const rows = await this.db.prepare('SELECT id, project_slug as projectSlug, name, scopes, created_at as createdAt, revoked_at as revokedAt FROM project_publish_tokens WHERE project_slug = ? ORDER BY created_at DESC').bind(projectSlug).all<any>(); return (rows.results ?? []).map((row) => ({ ...row, scopes: JSON.parse(row.scopes) })) }
+  async revokeProjectPublishToken(projectSlug: string, id: string) { const result = await this.db.prepare('UPDATE project_publish_tokens SET revoked_at = ? WHERE id = ? AND project_slug = ? AND revoked_at IS NULL').bind(new Date().toISOString(), id, projectSlug).run() as { meta?: { changes?: number } }; return Number(result.meta?.changes ?? 0) > 0 }
 
   async revokeApiKey(accountId: string, id: string) {
     const result = await drizzle(this.db as unknown as D1Database).update(apiKeysTable).set({ revokedAt: new Date().toISOString() }).where(and(eq(apiKeysTable.id, id), eq(apiKeysTable.accountId, accountId), isNull(apiKeysTable.revokedAt))).run()
