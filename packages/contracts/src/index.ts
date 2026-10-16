@@ -232,6 +232,26 @@ export type GitHubActionsCacheSettings = {
   ttlSeconds: number
   apiKey: string
 }
+export type StorageProviderSettings = {
+  id?: string
+  name?: string
+  enabled?: boolean
+  primary?: boolean
+  priority?: number
+  provider: 'r2' | 'tencent_cos'
+  endpoint: string
+  region: string
+  bucket: string
+  accessKeyId: string
+  secretAccessKey: string
+  publicBaseUrl: string
+  pathPrefix: string
+}
+export type StorageSyncMode = 'manual' | 'automatic'
+export type StorageSettings = StorageProviderSettings & {
+  syncMode: StorageSyncMode
+  providers: StorageProviderSettings[]
+}
 export type SiteSettings = {
   appearance: {
     roundedProjectIcons: boolean
@@ -275,6 +295,7 @@ export type SiteSettings = {
     tenant: 'consumers' | 'common' | 'organizations'
   }
   githubActions: GitHubActionsCacheSettings
+  storage: StorageSettings
 }
 
 export type AccountView = {

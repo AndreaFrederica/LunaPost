@@ -101,6 +101,19 @@ pnpm modpost:db:init -- --mode self-hosted --database sqlite --public-url http:/
 
 Worker 部署时通过绑定注入等价配置（如 `STORAGE` 指向 R2、D1 数据库绑定）。
 
+后台的“文件存储”设置支持一个主存储和多个镜像存储。当前提供 `r2`（使用 Worker 的 `STORAGE` binding）和 `tencent_cos`（填写 endpoint、region、bucket、密钥）两种适配器；旧版单存储配置会自动迁移为一个主存储。`syncMode` 设为 `automatic` 时，上传先写入主存储，再通过 Worker 的 `waitUntil` 异步复制到所有启用镜像；设为 `manual` 时不会自动复制。
+
+管理员可以调用下面的接口补齐镜像，支持单对象、多个对象或整个项目的托管文件：
+
+```text
+POST /api/v1/admin/storage/sync
+{ "key": "publish/example/…/file.jar" }
+{ "projectSlug": "example", "providerIds": ["cos-apac"] }
+GET  /api/v1/admin/storage/sync?key=publish/example/…/file.jar
+```
+
+同步记录保存在站点设置中，包含每个镜像的 `synced`/`failed` 状态和时间。私有桶请留空 `publicBaseUrl`，下载接口会返回对象存储的短期签名地址，文件字节不会经过 Worker。
+
 ## 账户与权限
 
 登录使用 HS256 JWT：浏览器侧保存在 HttpOnly Cookie，API 客户端也可以用登录响应中的 `accessToken` 走 `Authorization: Bearer <token>`。JWT 过期后，只要长期 Session 仍有效，`GET /api/v1/me` 会自动续发短期令牌。

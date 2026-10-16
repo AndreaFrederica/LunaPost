@@ -9,7 +9,7 @@ import { exampleCatalog } from '@andrea/contracts/catalog'
 import { accountView, createJwt, D1AccountStore, hashApiKey, hashPassword, hashSessionId, MemoryAccountStore, type AccountRecord, type AccountRole, type AccountStore, type ProjectMemberRole, verifyJwt, verifyPassword } from './auth.js'
 import { registerModrinthCompat } from './modrinth-compat.js'
 import { registerDownloads } from './downloads.js'
-import { R2Storage, type StorageAdapter } from './storage.js'
+import { R2Storage, StoragePool, TencentCosStorage, type StorageAdapter, type StorageProviderConfig, type StorageSyncResult } from './storage.js'
 import { registerYgg } from './ygg.js'
 import { registerMojang } from './mojang.js'
 
@@ -72,6 +72,32 @@ const defaultSiteSettings: SiteSettings = {
   ygg: { enabled: true, allowLocalAccounts: true, accessTokenTtlSeconds: 3600, refreshTokenTtlSeconds: 2592000, upstreams: [] },
   mojang: { enabled: false, clientId: '', tenant: 'consumers' },
   githubActions: { sharedEnabled: false, proxyEnabled: false, ttlSeconds: 300, apiKey: '' },
+  storage: { provider: 'r2', endpoint: '', region: '', bucket: '', accessKeyId: '', secretAccessKey: '', publicBaseUrl: '', pathPrefix: '', syncMode: 'manual', providers: [{ id: 'primary', name: 'Primary', provider: 'r2', enabled: true, primary: true, priority: 100, endpoint: '', region: '', bucket: '', accessKeyId: '', secretAccessKey: '', publicBaseUrl: '', pathPrefix: '' }] },
+}
+
+const normalizeStorageProvider = (raw: any, fallback: any, index: number): StorageProviderConfig => ({
+  id: String(raw?.id || fallback?.id || `provider-${index + 1}`).trim().slice(0, 100),
+  name: String(raw?.name || fallback?.name || `Storage ${index + 1}`).trim().slice(0, 120),
+  provider: raw?.provider === 'tencent_cos' ? 'tencent_cos' : 'r2',
+  enabled: raw?.enabled !== false,
+  primary: raw?.primary === true,
+  priority: Number.isFinite(Number(raw?.priority)) ? Number(raw.priority) : (fallback?.priority ?? 0),
+  endpoint: typeof raw?.endpoint === 'string' ? raw.endpoint.trim().replace(/\/+$/u, '').slice(0, 500) : (fallback?.endpoint || ''),
+  region: typeof raw?.region === 'string' ? raw.region.trim().slice(0, 100) : (fallback?.region || ''),
+  bucket: typeof raw?.bucket === 'string' ? raw.bucket.trim().slice(0, 150) : (fallback?.bucket || ''),
+  accessKeyId: typeof raw?.accessKeyId === 'string' ? raw.accessKeyId.trim().slice(0, 300) : (fallback?.accessKeyId || ''),
+  secretAccessKey: typeof raw?.secretAccessKey === 'string' ? raw.secretAccessKey.trim().slice(0, 500) : (fallback?.secretAccessKey || ''),
+  publicBaseUrl: typeof raw?.publicBaseUrl === 'string' ? raw.publicBaseUrl.trim().replace(/\/+$/u, '').slice(0, 500) : (fallback?.publicBaseUrl || ''),
+  pathPrefix: typeof raw?.pathPrefix === 'string' ? raw.pathPrefix.trim().replace(/^\/+|\/+$/gu, '').slice(0, 200) : (fallback?.pathPrefix || ''),
+})
+
+const normalizeStorageSettings = (raw: any): SiteSettings['storage'] => {
+  const legacy = normalizeStorageProvider(raw, defaultSiteSettings.storage, 0)
+  const configured: StorageProviderConfig[] = Array.isArray(raw?.providers) && raw.providers.length ? raw.providers.map((item: any, index: number) => normalizeStorageProvider(item, index === 0 ? legacy : undefined, index)) : [legacy]
+  const primary = configured.find((item: StorageProviderConfig) => item.primary !== false && item.enabled !== false) ?? configured.find((item: StorageProviderConfig) => item.enabled !== false) ?? configured[0]
+  const providers = configured.map((item: StorageProviderConfig, index: number) => ({ ...item, primary: item.id === primary.id || (index === 0 && !configured.some((candidate: StorageProviderConfig) => candidate.primary)) }))
+  const selected = providers.find((item: StorageProviderConfig & { primary: boolean }) => item.primary) ?? providers[0]
+  return { ...selected, syncMode: raw?.syncMode === 'automatic' ? 'automatic' : 'manual', providers }
 }
 
 const randomApiKey = () => {
@@ -98,7 +124,56 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
   const app = new Hono<AppEnv>()
   const memoryStore = new MemoryAccountStore()
   const getAuthStore = (c: { env: AppEnv['Bindings'] }) => options.authStore ?? (c.env.DB ? new D1AccountStore(c.env.DB) : memoryStore)
-  const getStorage = (c: { env: AppEnv['Bindings'] }) => options.storage ?? (c.env.STORAGE ? new R2Storage(c.env.STORAGE) : null)
+  const getStorage = async (c: any): Promise<StorageAdapter | null> => {
+    if (options.storage) return options.storage
+    const settings = await getSiteSettings(c)
+    const configured = Array.isArray(settings.storage.providers) && settings.storage.providers.length ? settings.storage.providers : [settings.storage]
+    const providers: Array<{ id: string; config: StorageProviderConfig; adapter: StorageAdapter; primary?: boolean }> = []
+    for (const [index, raw] of configured.entries()) {
+      const config = raw as StorageProviderConfig
+      if (config.enabled === false) continue
+      let adapter: StorageAdapter | null = null
+      if (config.provider === 'tencent_cos' && config.region && config.bucket && config.accessKeyId && config.secretAccessKey) adapter = new TencentCosStorage(config as any)
+      else if (config.provider === 'r2' && c.env.STORAGE) adapter = new R2Storage(c.env.STORAGE)
+      if (adapter) providers.push({ id: config.id?.trim() || `provider-${index + 1}`, config, adapter, primary: config.primary === true })
+    }
+    if (!providers.length) return null
+    const schedule = c.executionCtx?.waitUntil ? (task: Promise<void>) => c.executionCtx.waitUntil(task) : undefined
+    return new StoragePool(providers, settings.storage.syncMode, schedule)
+  }
+  const storageObjectUrl = async (c: any, key: string) => {
+    const settings = await getSiteSettings(c)
+    if (settings.storage.publicBaseUrl) {
+      const publicKey = [settings.storage.pathPrefix, key].filter(Boolean).join('/')
+      return `${settings.storage.publicBaseUrl}/${publicKey.split('/').map((part: string) => encodeURIComponent(part)).join('/')}`
+    }
+    const origin = new URL(c.env?.PUBLIC_BASE_URL || c.req.url).origin
+    return new URL(`/api/v1/storage/${key.split('/').map((part: string) => encodeURIComponent(part)).join('/')}`, origin).href
+  }
+  const storageKeyFromUrl = async (c: any, value: string) => {
+    try {
+      const pathname = new URL(value, 'https://storage.invalid').pathname
+      const marker = '/api/v1/storage/'
+      if (pathname.includes(marker)) return pathname.slice(pathname.indexOf(marker) + marker.length).split('/').map((part) => decodeURIComponent(part)).join('/')
+      const settings = await getSiteSettings(c)
+      if (!settings.storage.publicBaseUrl) return null
+      const publicUrl = new URL(settings.storage.publicBaseUrl, value)
+      const candidate = new URL(value, publicUrl).pathname
+      const prefix = `/${[settings.storage.pathPrefix].filter(Boolean).join('/')}`
+      if (prefix !== '/' && !candidate.startsWith(`${prefix}/`)) return null
+      return candidate.slice(prefix === '/' ? 1 : prefix.length + 1).split('/').map((part) => decodeURIComponent(part)).join('/')
+    } catch { return null }
+  }
+  const readStorageSyncStatus = async (c: any, key: string) => {
+    const raw = await getAuthStore(c).getAppSetting(`storage_sync:${key}`)
+    if (!raw) return null
+    try { return JSON.parse(raw) as { key: string; results: StorageSyncResult[]; updatedAt: string } } catch { return null }
+  }
+  const writeStorageSyncStatus = async (c: any, key: string, results: StorageSyncResult[]) => {
+    const value = { key, results, updatedAt: new Date().toISOString() }
+    await getAuthStore(c).setAppSetting(`storage_sync:${key}`, JSON.stringify(value))
+    return value
+  }
   const getCatalogFor = async (c: any): Promise<Catalog> => {
     const base = getCatalog(c.env?.CATALOG_JSON, c.req.header('accept-language'))
     const stored = (await getAuthStore(c).listStoredProjects()).map((project) => projectSchema.parse(project))
@@ -268,6 +343,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
         },
         mojang: { ...defaultSiteSettings.mojang, ...(value.mojang ?? {}), tenant: ['consumers', 'common', 'organizations'].includes(value.mojang?.tenant ?? '') ? value.mojang?.tenant as 'consumers' | 'common' | 'organizations' : 'consumers' },
         githubActions: { sharedEnabled: value.githubActions?.sharedEnabled === true, proxyEnabled: value.githubActions?.proxyEnabled === true, ttlSeconds: Number.isFinite(Number(value.githubActions?.ttlSeconds)) ? Math.max(60, Math.min(86400, Number(value.githubActions?.ttlSeconds))) : defaultSiteSettings.githubActions.ttlSeconds, apiKey: typeof value.githubActions?.apiKey === 'string' ? value.githubActions.apiKey.trim().slice(0, 300) : '' },
+        storage: normalizeStorageSettings(value.storage),
         moderation: {
           ...defaultSiteSettings.moderation,
           ...(value.moderation ?? {}),
@@ -672,7 +748,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const administrator = await requireAdmin(c)
     if (!administrator) return c.json({ error: { code: 'FORBIDDEN', message: 'Admin access required' } }, 403)
     const settings = await getSiteSettings(c)
-    return c.json({ settings: administrator.role === 'root' ? settings : { ...settings, githubActions: { ...settings.githubActions, apiKey: '' } } })
+    return c.json({ settings: administrator.role === 'root' ? settings : { ...settings, githubActions: { ...settings.githubActions, apiKey: '' }, storage: { ...settings.storage, accessKeyId: '', secretAccessKey: '', providers: settings.storage.providers.map((provider) => ({ ...provider, accessKeyId: '', secretAccessKey: '' })) } } })
   })
 
   app.get('/api/v1/admin/database/export', async (c) => {
@@ -756,12 +832,29 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const githubActions = body?.githubActions ?? current.githubActions
     if (!githubActions || typeof githubActions.sharedEnabled !== 'boolean' || typeof githubActions.proxyEnabled !== 'boolean' || !Number.isInteger(Number(githubActions.ttlSeconds)) || Number(githubActions.ttlSeconds) < 60 || Number(githubActions.ttlSeconds) > 86400 || (githubActions.apiKey !== undefined && typeof githubActions.apiKey !== 'string')) return c.json({ error: { code: 'INVALID_SETTINGS', message: 'Invalid GitHub Actions cache settings' } }, 400)
     const githubApiKey = administrator.role === 'root' ? String(githubActions.apiKey ?? '').trim().slice(0, 300) : current.githubActions.apiKey
+    const storage = body?.storage ?? current.storage
+    if (!storage || !['r2', 'tencent_cos'].includes(storage.provider ?? '')) return c.json({ error: { code: 'INVALID_SETTINGS', message: 'Invalid storage settings' } }, 400)
+    const requestedProviders = Array.isArray(storage.providers) && storage.providers.length ? storage.providers : [storage]
+    if (requestedProviders.length < 1 || requestedProviders.length > 12) return c.json({ error: { code: 'INVALID_SETTINGS', message: 'Storage providers must contain between 1 and 12 entries' } }, 400)
+    const currentProviders = new Map(current.storage.providers.map((provider) => [provider.id, provider]))
+    const storageProviders = requestedProviders.map((item: any, index: number) => {
+      const existing = currentProviders.get(String(item?.id || ''))
+      const normalized = normalizeStorageProvider(item, existing, index)
+      if (administrator.role !== 'root') { normalized.accessKeyId = existing?.accessKeyId || ''; normalized.secretAccessKey = existing?.secretAccessKey || '' }
+      return normalized
+    })
+    if (storageProviders.filter((item) => item.enabled !== false).length === 0 || storageProviders.filter((item) => item.primary).length > 1) return c.json({ error: { code: 'INVALID_SETTINGS', message: 'At least one storage provider must be enabled and only one may be primary' } }, 400)
+    if (new Set(storageProviders.map((item) => item.id)).size !== storageProviders.length) return c.json({ error: { code: 'INVALID_SETTINGS', message: 'Storage provider IDs must be unique' } }, 400)
+    const primaryStorage = storageProviders.find((item) => item.primary) ?? storageProviders.find((item) => item.enabled !== false)
+    storageProviders.forEach((item) => { item.primary = item.id === primaryStorage?.id })
+    for (const item of storageProviders) if (item.provider === 'tencent_cos' && item.enabled !== false && (!item.region || !item.bucket || !item.accessKeyId || !item.secretAccessKey)) return c.json({ error: { code: 'INVALID_SETTINGS', message: 'Tencent COS requires region, bucket, access key and secret key' } }, 400)
+    const storageSettings = { ...primaryStorage!, syncMode: storage.syncMode === 'automatic' ? 'automatic' as const : current.storage.syncMode, providers: storageProviders }
     const yggAccessTtl = administrator.role === 'root' ? Number(ygg.accessTokenTtlSeconds) : current.ygg.accessTokenTtlSeconds
     const yggRefreshTtl = administrator.role === 'root' ? Number(ygg.refreshTokenTtlSeconds) : current.ygg.refreshTokenTtlSeconds
     if (!Number.isInteger(yggAccessTtl) || yggAccessTtl < 300 || yggAccessTtl > 86400 || !Number.isInteger(yggRefreshTtl) || yggRefreshTtl < 3600 || yggRefreshTtl > 31536000 || yggRefreshTtl <= yggAccessTtl) return c.json({ error: { code: 'INVALID_SETTINGS', message: apiT(c.req.header('accept-language'), 'apiErrors.invalidYggTokenLifetime') } }, 400)
-    const settings: SiteSettings = { appearance: { roundedProjectIcons, siteName, siteIconUrl }, registration: { enabled: registration.enabled, requireInviteCode: registration.requireInviteCode, requireApproval: registration.requireApproval, inviteCodes }, moderation: { projectCreation: moderation.projectCreation as ModerationPolicy, fileSubmission: moderation.fileSubmission as ModerationPolicy, automatic: { ...automatic, maxFileSize: Number(automatic.maxFileSize), blockedExtensions: automatic.blockedExtensions.map((item) => String(item).toLowerCase().replace(/^\./u, '')).filter(Boolean) } }, ygg: { enabled: ygg.enabled, allowLocalAccounts: ygg.allowLocalAccounts, accessTokenTtlSeconds: yggAccessTtl, refreshTokenTtlSeconds: yggRefreshTtl, upstreams }, mojang: { enabled: mojang.enabled, clientId: mojang.clientId.trim().slice(0, 200), tenant: mojang.tenant }, githubActions: { sharedEnabled: githubActions.sharedEnabled, proxyEnabled: githubActions.proxyEnabled, ttlSeconds: Number(githubActions.ttlSeconds), apiKey: githubApiKey } }
+    const settings: SiteSettings = { appearance: { roundedProjectIcons, siteName, siteIconUrl }, registration: { enabled: registration.enabled, requireInviteCode: registration.requireInviteCode, requireApproval: registration.requireApproval, inviteCodes }, moderation: { projectCreation: moderation.projectCreation as ModerationPolicy, fileSubmission: moderation.fileSubmission as ModerationPolicy, automatic: { ...automatic, maxFileSize: Number(automatic.maxFileSize), blockedExtensions: automatic.blockedExtensions.map((item) => String(item).toLowerCase().replace(/^\./u, '')).filter(Boolean) } }, ygg: { enabled: ygg.enabled, allowLocalAccounts: ygg.allowLocalAccounts, accessTokenTtlSeconds: yggAccessTtl, refreshTokenTtlSeconds: yggRefreshTtl, upstreams }, mojang: { enabled: mojang.enabled, clientId: mojang.clientId.trim().slice(0, 200), tenant: mojang.tenant }, githubActions: { sharedEnabled: githubActions.sharedEnabled, proxyEnabled: githubActions.proxyEnabled, ttlSeconds: Number(githubActions.ttlSeconds), apiKey: githubApiKey }, storage: storageSettings }
     await saveSiteSettings(c, settings)
-    return c.json({ settings })
+    return c.json({ settings: administrator.role === 'root' ? settings : { ...settings, githubActions: { ...settings.githubActions, apiKey: '' }, storage: { ...settings.storage, accessKeyId: '', secretAccessKey: '', providers: settings.storage.providers.map((provider) => ({ ...provider, accessKeyId: '', secretAccessKey: '' })) } } })
   })
 
   app.patch('/api/v1/admin/accounts/:id/verification', async (c) => {
@@ -1045,9 +1138,48 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     return c.json({ favorite: false, count: (project.followers ?? 0) + engagement.favorites })
   })
 
-  app.get('/api/v1/storage/:id', async (c) => {
-    const storage = getStorage(c)
+  app.get('/api/v1/admin/storage/sync', async (c) => {
+    const administrator = await requireAdmin(c)
+    if (!administrator) return c.json({ error: { code: 'FORBIDDEN', message: 'Admin access required' } }, 403)
+    const key = c.req.query('key')
+    if (!key || key.length > 500) return c.json({ error: { code: 'INVALID_STORAGE_KEY', message: '请提供要查询的存储对象 key' } }, 400)
+    return c.json({ status: await readStorageSyncStatus(c, key) })
+  })
+
+  app.post('/api/v1/admin/storage/sync', async (c) => {
+    const administrator = await requireAdmin(c)
+    if (!administrator) return c.json({ error: { code: 'FORBIDDEN', message: 'Admin access required' } }, 403)
+    const body = await c.req.json().catch(() => null) as { key?: string; keys?: string[]; projectSlug?: string; force?: boolean; providerIds?: string[] } | null
+    const keys = new Set<string>()
+    if (typeof body?.key === 'string' && body.key.trim()) keys.add(body.key.trim())
+    for (const item of Array.isArray(body?.keys) ? body.keys : []) if (typeof item === 'string' && item.trim()) keys.add(item.trim())
+    if (body?.projectSlug) {
+      const project = (await getCatalogFor(c)).projects.find((item) => item.slug === body.projectSlug)
+      if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404)
+      for (const file of project.versions.flatMap((version) => version.files)) for (const source of file.sources) {
+        const managedKey = await storageKeyFromUrl(c, source.url)
+        if (managedKey) keys.add(managedKey)
+      }
+    }
+    if (!keys.size || keys.size > 1_000 || [...keys].some((item) => item.length > 500)) return c.json({ error: { code: 'INVALID_STORAGE_KEY', message: '请提供 1 到 1000 个有效的存储对象 key 或项目' } }, 400)
+    const storage = await getStorage(c)
+    if (!(storage instanceof StoragePool)) return c.json({ error: { code: 'STORAGE_SYNC_UNAVAILABLE', message: '当前存储配置没有可同步的镜像' } }, 409)
+    const results: Array<{ key: string; results: StorageSyncResult[] }> = []
+    for (const item of keys) {
+      const syncResults = await storage.sync(item, body?.providerIds)
+      await writeStorageSyncStatus(c, item, syncResults)
+      results.push({ key: item, results: syncResults })
+    }
+    return c.json({ ok: true, force: body?.force === true, results })
+  })
+
+  app.get('/api/v1/storage/:id{.+}', async (c) => {
+    const storage = await getStorage(c)
     if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: apiT(c.req.header('accept-language'), 'apiErrors.storageNotConfigured') } }, 503)
+    const primaryCanRedirect = storage instanceof StoragePool ? Boolean(storage.providers.find((provider) => provider.primary)?.adapter.getRedirectUrl) : Boolean(storage.getRedirectUrl)
+    if (storage.getRedirectUrl && primaryCanRedirect) {
+      try { return c.redirect(await storage.getRedirectUrl(c.req.param('id'), 300), 302) } catch { /* fall through to a mirror byte read */ }
+    }
     const object = await storage.get(c.req.param('id'))
     if (!object) return c.json({ error: { code: 'NOT_FOUND', message: apiT(c.req.header('accept-language'), 'apiErrors.fileNotFound') } }, 404)
     c.header('Content-Type', object.contentType)
@@ -1058,7 +1190,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
 
   app.post('/api/v1/account/uploads', async (c) => {
     const account = await getCurrentAccount(c)
-    const storage = getStorage(c)
+    const storage = await getStorage(c)
     if (!account) return c.json({ error: { code: 'UNAUTHORIZED', message: apiT(c.req.header('accept-language'), 'apiErrors.unauthorized') } }, 401)
     if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: apiT(c.req.header('accept-language'), 'apiErrors.storageNotConfigured') } }, 503)
     const form = await c.req.parseBody(); const upload = form.file
@@ -1067,8 +1199,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     if (purpose === 'skin' && (upload.size > 2 * 1024 * 1024 || !['image/png', 'image/jpeg'].includes(upload.type))) return c.json({ error: { code: 'INVALID_SKIN', message: apiT(c.req.header('accept-language'), 'apiErrors.invalidSkinCapeFile') } }, 413)
     if (upload.size > 20 * 1024 * 1024) return c.json({ error: { code: 'FILE_TOO_LARGE', message: apiT(c.req.header('accept-language'), 'apiErrors.imageTooLarge') } }, 413)
     const id = crypto.randomUUID(); await storage.put(id, await upload.arrayBuffer(), upload.type || 'application/octet-stream', upload.name)
-    const origin = new URL(c.env?.PUBLIC_BASE_URL || c.req.url).origin
-    return c.json({ id, url: new URL(`/api/v1/storage/${id}`, origin).href, name: upload.name, size: upload.size }, 201)
+    return c.json({ id, url: await storageObjectUrl(c, id), name: upload.name, size: upload.size }, 201)
   })
 
   app.get('/api/v1/projects/:slug/site', async (c) => {
@@ -1087,7 +1218,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     if (auth.error) return auth.error
     if ((c as any).get('publishProjectSlug') && (c as any).get('publishProjectSlug') !== project.slug) return c.json({ error: { code: 'PROJECT_SCOPE_REQUIRED', message: '发布令牌未绑定此项目' } }, 403)
     if (!await canManageProject(c, project)) return c.json({ error: { code: 'FORBIDDEN', message: apiT(c.req.header('accept-language'), 'apiErrors.fileUploadForbidden') } }, 403)
-    const storage = getStorage(c)
+    const storage = await getStorage(c)
     if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: apiT(c.req.header('accept-language'), 'apiErrors.storageNotConfigured') } }, 503)
     const form = await c.req.parseBody()
     const upload = form.file
@@ -1098,8 +1229,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     if (settings.moderation.automatic.blockedExtensions.includes(extension)) return c.json({ error: { code: 'FILE_TYPE_BLOCKED', message: apiT(c.req.header('accept-language'), 'apiErrors.extensionBlocked') } }, 415)
     const id = crypto.randomUUID()
     await storage.put(id, await upload.arrayBuffer(), upload.type || 'application/octet-stream', upload.name)
-    const origin = new URL(c.env?.PUBLIC_BASE_URL || c.req.url).origin
-    return c.json({ id, name: upload.name, size: upload.size, source: { id: `managed-${id}`, kind: 'managed', region: 'GLOBAL', url: new URL(`/api/v1/storage/${id}`, origin).href, priority: 100 } }, 201)
+    return c.json({ id, name: upload.name, size: upload.size, source: { id: `managed-${id}`, kind: 'managed', region: 'GLOBAL', url: await storageObjectUrl(c, id), priority: 100 } }, 201)
   })
 
   app.post('/api/v1/publish/uploads', async (c) => {
@@ -1109,7 +1239,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     if (!projectSlug || ((c as any).get('publishProjectSlug') && (c as any).get('publishProjectSlug') !== projectSlug)) return c.json({ error: { code: 'PROJECT_SCOPE_REQUIRED', message: '请提供匹配发布令牌的 project 参数' } }, 403)
     const body = await c.req.json().catch(() => null) as { filename?: string; size?: number; sha256?: string; contentType?: string } | null
     if (!body?.filename || !Number.isSafeInteger(body.size) || Number(body.size) < 0 || Number(body.size) > 512 * 1024 * 1024) return c.json({ error: { code: 'INVALID_UPLOAD', message: '文件名和大小不正确' } }, 400)
-    const storage = getStorage(c); if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: '文件存储未配置' } }, 503)
+    const storage = await getStorage(c); if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: '文件存储未配置' } }, 503)
     const id = crypto.randomUUID(); const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); const contentType = body.contentType || 'application/octet-stream'; const key = `publish/${projectSlug}/${id}/${body.filename}`
     const multipartId = Number(body.size) > 100 * 1024 * 1024 && storage.createMultipart ? await storage.createMultipart(key, contentType, body.filename) : null
     await getAuthStore(c).createPublishUpload({ id, projectSlug, accountId: auth.account!.id, filename: body.filename, size: Number(body.size), sha256: body.sha256 ?? null, contentType, storageKey: key, multipartId, status: 'created', createdAt: new Date().toISOString(), expiresAt })
@@ -1121,7 +1251,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const auth = await requireScope(c, 'release:write'); if (auth.error) return auth.error
     const row = await getAuthStore(c).getPublishUpload(c.req.param('id'), auth.account!.id)
     if (!row || row.status !== 'created' || Date.parse(row.expiresAt) < Date.now()) return c.json({ error: { code: 'UPLOAD_EXPIRED', message: '上传会话不存在或已过期' } }, 404)
-    const storage = getStorage(c); if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: '文件存储未配置' } }, 503)
+    const storage = await getStorage(c); if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: '文件存储未配置' } }, 503)
     const data = await c.req.arrayBuffer(); if (data.byteLength !== Number(row.size)) return c.json({ error: { code: 'SIZE_MISMATCH', message: '文件大小不匹配' } }, 422)
     if (row.multipartId) return c.json({ error: { code: 'MULTIPART_REQUIRED', message: '此会话需要分片上传' } }, 409)
     await storage.put(row.storageKey!, data, row.contentType, row.filename)
@@ -1132,7 +1262,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
   app.put('/api/v1/publish/uploads/:id/parts/:part', async (c) => {
     const auth = await requireScope(c, 'release:write'); if (auth.error) return auth.error
     const row = await getAuthStore(c).getPublishUpload(c.req.param('id'), auth.account!.id)
-    const storage = getStorage(c); const part = Number(c.req.param('part'))
+    const storage = await getStorage(c); const part = Number(c.req.param('part'))
     if (!row || row.status !== 'created' || !row.multipartId || !storage?.uploadPart || !Number.isInteger(part) || part < 1 || part > 10000) return c.json({ error: { code: 'INVALID_PART', message: '分片上传会话或分片编号无效' } }, 400)
     const etag = await storage.uploadPart(row.storageKey!, row.multipartId, part, await c.req.arrayBuffer())
     return c.json({ part, etag })
@@ -1141,7 +1271,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
   app.post('/api/v1/publish/uploads/:id/complete', async (c) => {
     const auth = await requireScope(c, 'release:write'); if (auth.error) return auth.error
     const row = await getAuthStore(c).getPublishUpload(c.req.param('id'), auth.account!.id)
-    const storage = getStorage(c); const body = await c.req.json().catch(() => null) as { parts?: Array<{ partNumber?: number; etag?: string }> } | null
+    const storage = await getStorage(c); const body = await c.req.json().catch(() => null) as { parts?: Array<{ partNumber?: number; etag?: string }> } | null
     if (!row || row.status !== 'created' || !row.multipartId || !storage?.completeMultipart || !body?.parts?.length) return c.json({ error: { code: 'INVALID_MULTIPART', message: '分片上传会话或分片列表无效' } }, 400)
     await storage.completeMultipart(row.storageKey!, row.multipartId, body.parts.map((part) => ({ partNumber: Number(part.partNumber), etag: String(part.etag) })))
     await getAuthStore(c).completePublishUpload(row.id)
@@ -1162,8 +1292,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
       if (!raw?.uploadId) return raw
       const upload = await getAuthStore(c).getCompletedPublishUpload(raw.uploadId, auth.account!.id, current.slug)
       if (!upload) return { ...raw, sources: [] }
-      const origin = new URL(c.env?.PUBLIC_BASE_URL || c.req.url).origin
-      const managed = { id: `managed-${upload.id}`, kind: 'managed', region: 'GLOBAL', url: new URL(`/api/v1/storage/${upload.storageKey}`, origin).href, priority: 50 }
+      const managed = { id: `managed-${upload.id}`, kind: 'managed', region: 'GLOBAL', url: await storageObjectUrl(c, upload.storageKey!), priority: 50 }
       return { ...raw, id: raw.id || `publish-${upload.id}`, name: raw.filename || upload.filename, size: Number(upload.size), sources: [...(Array.isArray(raw.sources) ? raw.sources : []), managed] }
     })) : [] } : body?.version
     const parsed = versionSchema.safeParse(rawVersion)

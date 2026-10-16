@@ -68,3 +68,31 @@ test('only root can change the site identity', async () => {
   assert.equal(saved.appearance.siteName, 'LunaPost Studio')
   assert.equal(saved.appearance.siteIconUrl, 'https://example.com/site-icon.png')
 })
+
+test('storage provider settings persist while credentials stay hidden from admins', async () => {
+  const root = await fixture('root')
+  const settings = (await root.read()).settings
+  settings.storage = { provider: 'tencent_cos', endpoint: 'https://cos.example.test', region: 'ap-guangzhou', bucket: 'lunapost-1250000000', accessKeyId: 'secret-id', secretAccessKey: 'secret-key', publicBaseUrl: 'https://cdn.example.test', pathPrefix: 'files' }
+  assert.equal((await root.save(settings)).status, 200)
+  assert.equal((await root.read()).settings.storage.secretAccessKey, 'secret-key')
+  const admin = await fixture('admin')
+  await admin.store.setAppSetting('site_settings', JSON.stringify((await root.read()).settings))
+  const adminSettings = (await admin.read()).settings
+  assert.equal(adminSettings.storage.accessKeyId, '')
+  assert.equal(adminSettings.storage.secretAccessKey, '')
+})
+
+test('multiple storage providers and automatic sync mode persist', async () => {
+  const root = await fixture('root')
+  const settings = (await root.read()).settings
+  settings.storage.syncMode = 'automatic'
+  settings.storage.providers = [
+    { ...settings.storage.providers[0], id: 'r2-primary', primary: true, enabled: true },
+    { id: 'cos-mirror', name: 'COS mirror', provider: 'tencent_cos', primary: false, enabled: true, endpoint: 'https://cos.example.test', region: 'ap-guangzhou', bucket: 'bucket', accessKeyId: 'id', secretAccessKey: 'secret', publicBaseUrl: '', pathPrefix: 'mirror' },
+  ]
+  assert.equal((await root.save(settings)).status, 200)
+  const saved = (await root.read()).settings
+  assert.equal(saved.storage.syncMode, 'automatic')
+  assert.deepEqual(saved.storage.providers.map((item: any) => item.id), ['r2-primary', 'cos-mirror'])
+  assert.equal(saved.storage.providers[1].secretAccessKey, 'secret')
+})
