@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from '../i18n'
+import { githubActionsClientCache, githubActionsClientStrategy, githubActionsShareResults } from '../githubActionsPreferences'
 
 interface Props {
   owner: string
@@ -36,6 +37,8 @@ const loading = ref(false)
 const error = ref('')
 const page = ref(1)
 const totalCount = ref(0)
+const sharedCacheEnabled = ref(false)
+const cacheTtlSeconds = ref(300)
 let controller: AbortController | undefined
 
 const pageCount = () => Math.max(1, Math.ceil(totalCount.value / props.perPage))
@@ -50,7 +53,40 @@ const runUrl = (artifact: Artifact) => artifact.workflow_run
   ? `https://github.com/${encodeURIComponent(props.owner)}/${encodeURIComponent(props.repo)}/actions/runs/${artifact.workflow_run.id}`
   : `https://github.com/${encodeURIComponent(props.owner)}/${encodeURIComponent(props.repo)}/actions`
 
-const loadArtifacts = async () => {
+const cacheKey = () => `lunapost:github-actions:${props.owner.toLowerCase()}/${props.repo.toLowerCase()}:${page.value}:${props.perPage}`
+const readLocalCache = () => {
+  try {
+    const value = JSON.parse(localStorage.getItem(cacheKey()) ?? '') as { savedAt: number; data: ArtifactResponse }
+    return value.savedAt + cacheTtlSeconds.value * 1000 > Date.now() ? value.data : null
+  } catch { return null }
+}
+const saveLocalCache = (data: ArtifactResponse) => {
+  try { localStorage.setItem(cacheKey(), JSON.stringify({ savedAt: Date.now(), data })) } catch { /* Storage can be disabled or full. */ }
+}
+const applyData = (data: ArtifactResponse) => {
+  artifacts.value = data.artifacts.filter((artifact) => !artifact.expired)
+  totalCount.value = data.total_count
+}
+const loadCacheSettings = async () => {
+  try {
+    const response = await fetch('/api/v1/settings', { headers: { Accept: 'application/json' } })
+    if (!response.ok) return
+    const body = await response.json() as { settings?: { githubActions?: { sharedEnabled?: boolean; ttlSeconds?: number } } }
+    sharedCacheEnabled.value = body.settings?.githubActions?.sharedEnabled === true
+    cacheTtlSeconds.value = Math.max(60, Math.min(86400, Number(body.settings?.githubActions?.ttlSeconds) || 300))
+  } catch { /* Direct GitHub mode remains available when settings cannot be read. */ }
+}
+const loadFromServer = async (allowProxy = false) => {
+  if (!sharedCacheEnabled.value && !allowProxy) return null
+  const proxyUrl = new URL('/api/v1/github/actions/artifacts', window.location.origin)
+  proxyUrl.searchParams.set('owner', props.owner); proxyUrl.searchParams.set('repo', props.repo); proxyUrl.searchParams.set('page', String(page.value)); proxyUrl.searchParams.set('per_page', String(props.perPage)); if (allowProxy) proxyUrl.searchParams.set('proxy', '1')
+  const response = await fetch(proxyUrl, { signal: controller?.signal, headers: { Accept: 'application/json' } })
+  if (!response.ok) return null
+  const body = await response.json() as { enabled?: boolean; data?: ArtifactResponse }
+  return body.enabled && body.data ? body.data : null
+}
+
+const loadArtifacts = async (force = false) => {
   controller?.abort()
   const currentController = new AbortController()
   controller = currentController
@@ -58,11 +94,23 @@ const loadArtifacts = async () => {
   error.value = ''
 
   try {
+    await loadCacheSettings()
+    if (!force && githubActionsClientCache.value) {
+      const local = readLocalCache()
+      if (local) { applyData(local); return }
+    } else {
+      try { localStorage.removeItem(cacheKey()) } catch { /* Ignore unavailable storage. */ }
+    }
+    if (!force && githubActionsClientStrategy.value === 'server-first') {
+      const serverData = await loadFromServer()
+      if (serverData) { applyData(serverData); if (githubActionsClientCache.value) saveLocalCache(serverData); return }
+    }
     const url = new URL(`https://api.github.com/repos/${encodeURIComponent(props.owner)}/${encodeURIComponent(props.repo)}/actions/artifacts`)
     url.searchParams.set('per_page', String(props.perPage))
     url.searchParams.set('page', String(page.value))
     const response = await fetch(url, {
       signal: currentController.signal,
+      cache: force ? 'no-store' : 'default',
       headers: { Accept: 'application/vnd.github+json' },
     })
     if (!response.ok) {
@@ -71,12 +119,20 @@ const loadArtifacts = async () => {
       throw new Error(t('project.githubActionsRequestFailed', { status: response.status }))
     }
     const data = await response.json() as ArtifactResponse
-    artifacts.value = data.artifacts.filter((artifact) => !artifact.expired)
-    totalCount.value = data.total_count
+    applyData(data)
+    if (githubActionsClientCache.value) saveLocalCache(data)
+    if (sharedCacheEnabled.value && githubActionsShareResults.value) {
+      const cacheUrl = new URL('/api/v1/github/actions/artifacts/cache', window.location.origin)
+      cacheUrl.searchParams.set('owner', props.owner); cacheUrl.searchParams.set('repo', props.repo); cacheUrl.searchParams.set('page', String(page.value)); cacheUrl.searchParams.set('per_page', String(props.perPage))
+      void fetch(cacheUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(data) }).catch(() => undefined)
+    }
   } catch (cause) {
     if (currentController.signal.aborted) return
-    error.value = cause instanceof Error ? cause.message : String(cause)
-    artifacts.value = []
+    try {
+      const serverData = await loadFromServer(true)
+      if (serverData) { applyData(serverData); if (githubActionsClientCache.value) saveLocalCache(serverData); return }
+    } catch { /* Fall through to the visible error. */ }
+    error.value = cause instanceof Error ? cause.message : String(cause); artifacts.value = []
   } finally {
     if (controller === currentController) loading.value = false
   }
@@ -101,7 +157,7 @@ watch(() => [props.owner, props.repo, props.perPage], () => {
         <div class="github-artifacts-title"><q-icon name="hub" /> {{ t('project.githubActionsTitle') }}</div>
         <div class="github-artifacts-repository">{{ owner }}/{{ repo }}</div>
       </div>
-      <q-btn flat dense no-caps icon="refresh" :label="t('project.githubActionsRefresh')" :loading="loading" @click="loadArtifacts" />
+      <q-btn flat dense no-caps icon="refresh" :label="t('project.githubActionsRefresh')" :loading="loading" @click="loadArtifacts(true)" />
     </div>
 
     <q-banner v-if="error" rounded class="github-artifacts-message github-artifacts-error" role="alert">

@@ -71,6 +71,7 @@ const defaultSiteSettings: SiteSettings = {
   registration: { enabled: true, requireInviteCode: false, requireApproval: false, inviteCodes: [] },
   ygg: { enabled: true, allowLocalAccounts: true, accessTokenTtlSeconds: 3600, refreshTokenTtlSeconds: 2592000, upstreams: [] },
   mojang: { enabled: false, clientId: '', tenant: 'consumers' },
+  githubActions: { sharedEnabled: false, proxyEnabled: false, ttlSeconds: 300, apiKey: '' },
 }
 
 const randomApiKey = () => {
@@ -266,6 +267,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
           upstreams: Array.isArray(value.ygg?.upstreams) ? value.ygg.upstreams : [],
         },
         mojang: { ...defaultSiteSettings.mojang, ...(value.mojang ?? {}), tenant: ['consumers', 'common', 'organizations'].includes(value.mojang?.tenant ?? '') ? value.mojang?.tenant as 'consumers' | 'common' | 'organizations' : 'consumers' },
+        githubActions: { sharedEnabled: value.githubActions?.sharedEnabled === true, proxyEnabled: value.githubActions?.proxyEnabled === true, ttlSeconds: Number.isFinite(Number(value.githubActions?.ttlSeconds)) ? Math.max(60, Math.min(86400, Number(value.githubActions?.ttlSeconds))) : defaultSiteSettings.githubActions.ttlSeconds, apiKey: typeof value.githubActions?.apiKey === 'string' ? value.githubActions.apiKey.trim().slice(0, 300) : '' },
         moderation: {
           ...defaultSiteSettings.moderation,
           ...(value.moderation ?? {}),
@@ -605,14 +607,72 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
   })
 
   app.get('/api/v1/settings', async (c) => {
-    const { appearance, registration } = await getSiteSettings(c)
+    const { appearance, registration, githubActions } = await getSiteSettings(c)
     c.header('Cache-Control', 'no-store')
-    return c.json({ settings: { appearance, registration: { enabled: registration.enabled, requireInviteCode: registration.requireInviteCode, requireApproval: registration.requireApproval } } })
+    return c.json({ settings: { appearance, registration: { enabled: registration.enabled, requireInviteCode: registration.requireInviteCode, requireApproval: registration.requireApproval }, githubActions: { sharedEnabled: githubActions.sharedEnabled, proxyEnabled: githubActions.proxyEnabled, ttlSeconds: githubActions.ttlSeconds } } })
+  })
+
+  const githubActionsRequest = (owner: string, repo: string, page: number, perPage: number) => {
+    const url = new URL(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/artifacts`)
+    url.searchParams.set('page', String(page)); url.searchParams.set('per_page', String(perPage))
+    return url
+  }
+  const githubActionsCacheKey = (owner: string, repo: string, page: number, perPage: number) => `github_actions_cache:${owner.toLowerCase()}:${repo.toLowerCase()}:${page}:${perPage}`
+  const validGitHubRepoPart = (value: string) => /^[a-zA-Z0-9_.-]{1,100}$/u.test(value)
+  const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
+  const validGitHubArtifact = (value: unknown) => {
+    if (!isRecord(value) || typeof value.id !== 'number' || !Number.isSafeInteger(value.id) || typeof value.name !== 'string' || value.name.length > 256 || typeof value.size_in_bytes !== 'number' || !Number.isSafeInteger(value.size_in_bytes) || value.size_in_bytes < 0 || typeof value.created_at !== 'string' || value.created_at.length > 100 || typeof value.expires_at !== 'string' || value.expires_at.length > 100 || typeof value.expired !== 'boolean') return false
+    if (value.workflow_run === undefined || value.workflow_run === null) return true
+    if (!isRecord(value.workflow_run) || !Number.isSafeInteger(value.workflow_run.id)) return false
+    return (value.workflow_run.head_branch === undefined || value.workflow_run.head_branch === null || typeof value.workflow_run.head_branch === 'string') && (value.workflow_run.head_sha === undefined || typeof value.workflow_run.head_sha === 'string')
+  }
+  const validGitHubActionsPayload = (value: unknown): value is { total_count: number; artifacts: unknown[] } => isRecord(value) && typeof value.total_count === 'number' && Number.isSafeInteger(value.total_count) && value.total_count >= 0 && Array.isArray(value.artifacts) && value.artifacts.length <= 100 && value.artifacts.every(validGitHubArtifact)
+  const readGitHubActionsCache = async (store: AccountStore, key: string, ttlSeconds: number) => {
+    const raw = await store.getAppSetting(key)
+    if (!raw) return null
+    try {
+      const cached = JSON.parse(raw) as { savedAt: number; data: unknown }
+      return typeof cached.savedAt === 'number' && Number.isFinite(cached.savedAt) && cached.savedAt + ttlSeconds * 1000 > Date.now() && validGitHubActionsPayload(cached.data) ? cached.data : null
+    } catch { return null }
+  }
+  const saveGitHubActionsCache = async (store: AccountStore, key: string, data: unknown) => store.setAppSetting(key, JSON.stringify({ savedAt: Date.now(), data }))
+
+  app.get('/api/v1/github/actions/artifacts', async (c) => {
+    const owner = c.req.query('owner')?.trim() ?? ''; const repo = c.req.query('repo')?.trim() ?? ''
+    const page = Math.max(1, Math.min(1000, Number(c.req.query('page') ?? 1) || 1)); const perPage = Math.max(1, Math.min(100, Number(c.req.query('per_page') ?? 30) || 30))
+    if (!validGitHubRepoPart(owner) || !validGitHubRepoPart(repo)) return c.json({ error: { code: 'INVALID_REPOSITORY', message: 'Invalid GitHub repository' } }, 400)
+    const settings = await getSiteSettings(c); const force = c.req.query('refresh') === '1'; const proxyRequested = c.req.query('proxy') === '1'
+    c.header('Cache-Control', settings.githubActions.sharedEnabled && !force && !proxyRequested ? `public, max-age=${Math.min(settings.githubActions.ttlSeconds, 300)}` : 'no-store')
+    if (!settings.githubActions.sharedEnabled && !proxyRequested) return c.json({ enabled: false })
+    const store = getAuthStore(c); const key = githubActionsCacheKey(owner, repo, page, perPage); const cached = settings.githubActions.sharedEnabled && !force ? await readGitHubActionsCache(store, key, settings.githubActions.ttlSeconds) : null
+    if (cached) return c.json({ enabled: true, cached: true, data: cached })
+    try {
+      if (!proxyRequested || !settings.githubActions.proxyEnabled) return c.json({ enabled: settings.githubActions.sharedEnabled, cached: false, error: { status: 424 } }, 424)
+      const response = await (options.externalFetch ?? fetch)(githubActionsRequest(owner, repo, page, perPage), { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'LunaPost', ...(settings.githubActions.apiKey ? { Authorization: `Bearer ${settings.githubActions.apiKey}` } : {}) } })
+      if (!response.ok) return c.json({ enabled: true, cached: false, error: { status: response.status } }, response.status as any)
+      const data = await response.json(); if (!validGitHubActionsPayload(data)) return c.json({ enabled: true, cached: false, error: { status: 502 } }, 502)
+      if (settings.githubActions.sharedEnabled) await saveGitHubActionsCache(store, key, data)
+      return c.json({ enabled: true, cached: false, data })
+    } catch { return c.json({ enabled: true, cached: false, error: { status: 502 } }, 502) }
+  })
+
+  app.post('/api/v1/github/actions/artifacts/cache', async (c) => {
+    const owner = c.req.query('owner')?.trim() ?? ''; const repo = c.req.query('repo')?.trim() ?? ''
+    const page = Math.max(1, Math.min(1000, Number(c.req.query('page') ?? 1) || 1)); const perPage = Math.max(1, Math.min(100, Number(c.req.query('per_page') ?? 30) || 30))
+    if (!validGitHubRepoPart(owner) || !validGitHubRepoPart(repo)) return c.json({ error: { code: 'INVALID_REPOSITORY', message: 'Invalid GitHub repository' } }, 400)
+    const settings = await getSiteSettings(c); if (!settings.githubActions.sharedEnabled) return c.json({ enabled: false })
+    const contentLength = Number(c.req.header('content-length') ?? 0)
+    if (contentLength > 2_000_000) return c.json({ error: { code: 'CACHE_PAYLOAD_TOO_LARGE', message: 'GitHub Actions cache payload is too large' } }, 413)
+    const body = await c.req.json().catch(() => null) as unknown
+    if (!validGitHubActionsPayload(body)) return c.json({ error: { code: 'INVALID_CACHE_PAYLOAD', message: 'Invalid GitHub Actions cache payload' } }, 400)
+    await saveGitHubActionsCache(getAuthStore(c), githubActionsCacheKey(owner, repo, page, perPage), body); return c.json({ enabled: true, saved: true })
   })
 
   app.get('/api/v1/admin/settings', async (c) => {
-    if (!await requireAdmin(c)) return c.json({ error: { code: 'FORBIDDEN', message: 'Admin access required' } }, 403)
-    return c.json({ settings: await getSiteSettings(c) })
+    const administrator = await requireAdmin(c)
+    if (!administrator) return c.json({ error: { code: 'FORBIDDEN', message: 'Admin access required' } }, 403)
+    const settings = await getSiteSettings(c)
+    return c.json({ settings: administrator.role === 'root' ? settings : { ...settings, githubActions: { ...settings.githubActions, apiKey: '' } } })
   })
 
   app.get('/api/v1/admin/database/export', async (c) => {
@@ -693,10 +753,13 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const upstreams = ygg.upstreams.map((item: any, index: number) => ({ id: String(item?.id || crypto.randomUUID()).slice(0, 120), name: String(item?.name || apiT(c.req.header('accept-language'), 'admin.upstreamName', { number: index + 1 })).trim().slice(0, 120), baseUrl: String(item?.baseUrl || '').trim().replace(/\/+$/u, ''), enabled: item?.enabled !== false, priority: Number.isFinite(Number(item?.priority)) ? Number(item.priority) : 0 })).filter((item: any) => item.baseUrl && /^https?:\/\//u.test(item.baseUrl)).slice(0, 20)
     const mojang = body?.mojang ?? current.mojang
     if (!mojang || typeof mojang.enabled !== 'boolean' || typeof mojang.clientId !== 'string' || !['consumers', 'common', 'organizations'].includes(mojang.tenant ?? '')) return c.json({ error: { code: 'INVALID_SETTINGS', message: apiT(c.req.header('accept-language'), 'apiErrors.invalidMojangSettings') } }, 400)
+    const githubActions = body?.githubActions ?? current.githubActions
+    if (!githubActions || typeof githubActions.sharedEnabled !== 'boolean' || typeof githubActions.proxyEnabled !== 'boolean' || !Number.isInteger(Number(githubActions.ttlSeconds)) || Number(githubActions.ttlSeconds) < 60 || Number(githubActions.ttlSeconds) > 86400 || (githubActions.apiKey !== undefined && typeof githubActions.apiKey !== 'string')) return c.json({ error: { code: 'INVALID_SETTINGS', message: 'Invalid GitHub Actions cache settings' } }, 400)
+    const githubApiKey = administrator.role === 'root' ? String(githubActions.apiKey ?? '').trim().slice(0, 300) : current.githubActions.apiKey
     const yggAccessTtl = administrator.role === 'root' ? Number(ygg.accessTokenTtlSeconds) : current.ygg.accessTokenTtlSeconds
     const yggRefreshTtl = administrator.role === 'root' ? Number(ygg.refreshTokenTtlSeconds) : current.ygg.refreshTokenTtlSeconds
     if (!Number.isInteger(yggAccessTtl) || yggAccessTtl < 300 || yggAccessTtl > 86400 || !Number.isInteger(yggRefreshTtl) || yggRefreshTtl < 3600 || yggRefreshTtl > 31536000 || yggRefreshTtl <= yggAccessTtl) return c.json({ error: { code: 'INVALID_SETTINGS', message: apiT(c.req.header('accept-language'), 'apiErrors.invalidYggTokenLifetime') } }, 400)
-    const settings: SiteSettings = { appearance: { roundedProjectIcons, siteName, siteIconUrl }, registration: { enabled: registration.enabled, requireInviteCode: registration.requireInviteCode, requireApproval: registration.requireApproval, inviteCodes }, moderation: { projectCreation: moderation.projectCreation as ModerationPolicy, fileSubmission: moderation.fileSubmission as ModerationPolicy, automatic: { ...automatic, maxFileSize: Number(automatic.maxFileSize), blockedExtensions: automatic.blockedExtensions.map((item) => String(item).toLowerCase().replace(/^\./u, '')).filter(Boolean) } }, ygg: { enabled: ygg.enabled, allowLocalAccounts: ygg.allowLocalAccounts, accessTokenTtlSeconds: yggAccessTtl, refreshTokenTtlSeconds: yggRefreshTtl, upstreams }, mojang: { enabled: mojang.enabled, clientId: mojang.clientId.trim().slice(0, 200), tenant: mojang.tenant } }
+    const settings: SiteSettings = { appearance: { roundedProjectIcons, siteName, siteIconUrl }, registration: { enabled: registration.enabled, requireInviteCode: registration.requireInviteCode, requireApproval: registration.requireApproval, inviteCodes }, moderation: { projectCreation: moderation.projectCreation as ModerationPolicy, fileSubmission: moderation.fileSubmission as ModerationPolicy, automatic: { ...automatic, maxFileSize: Number(automatic.maxFileSize), blockedExtensions: automatic.blockedExtensions.map((item) => String(item).toLowerCase().replace(/^\./u, '')).filter(Boolean) } }, ygg: { enabled: ygg.enabled, allowLocalAccounts: ygg.allowLocalAccounts, accessTokenTtlSeconds: yggAccessTtl, refreshTokenTtlSeconds: yggRefreshTtl, upstreams }, mojang: { enabled: mojang.enabled, clientId: mojang.clientId.trim().slice(0, 200), tenant: mojang.tenant }, githubActions: { sharedEnabled: githubActions.sharedEnabled, proxyEnabled: githubActions.proxyEnabled, ttlSeconds: Number(githubActions.ttlSeconds), apiKey: githubApiKey } }
     await saveSiteSettings(c, settings)
     return c.json({ settings })
   })

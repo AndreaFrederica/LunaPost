@@ -24,7 +24,7 @@ test('new and existing installations default to rounded icons; public settings o
   assert.equal((await read()).settings.appearance.roundedProjectIcons, true)
   const response = await app.request('/api/v1/settings', {}, env)
   assert.equal(response.status, 200)
-  assert.deepEqual(await response.json(), { settings: { appearance: { roundedProjectIcons: true, siteName: 'LunaPost', siteIconUrl: '/assets/projects/luna-launcher/icon.png' }, registration: { enabled: true, requireInviteCode: false, requireApproval: false } } })
+  assert.deepEqual(await response.json(), { settings: { appearance: { roundedProjectIcons: true, siteName: 'LunaPost', siteIconUrl: '/assets/projects/luna-launcher/icon.png' }, registration: { enabled: true, requireInviteCode: false, requireApproval: false }, githubActions: { sharedEnabled: false, proxyEnabled: false, ttlSeconds: 300 } } })
   assert.equal((await app.request('/api/v1/admin/settings', {}, env)).status, 403)
   assert.equal((await app.request('/api/v1/admin/settings', { method: 'PUT', body: JSON.stringify(settings) }, env)).status, 403)
 })
@@ -35,7 +35,7 @@ test('rounding choice persists and older clients do not reset it', async () => {
   settings.appearance.roundedProjectIcons = false
   assert.equal((await save(settings)).status, 200)
   const restarted = createApp({ authStore: store })
-  assert.deepEqual(await (await restarted.request('/api/v1/settings', {}, env)).json(), { settings: { appearance: { roundedProjectIcons: false, siteName: 'LunaPost', siteIconUrl: '/assets/projects/luna-launcher/icon.png' }, registration: { enabled: true, requireInviteCode: false, requireApproval: false } } })
+  assert.deepEqual(await (await restarted.request('/api/v1/settings', {}, env)).json(), { settings: { appearance: { roundedProjectIcons: false, siteName: 'LunaPost', siteIconUrl: '/assets/projects/luna-launcher/icon.png' }, registration: { enabled: true, requireInviteCode: false, requireApproval: false }, githubActions: { sharedEnabled: false, proxyEnabled: false, ttlSeconds: 300 } } })
   assert.equal((await save({ moderation: settings.moderation, registration: settings.registration, ygg: settings.ygg })).status, 200)
   assert.equal((await read()).settings.appearance.roundedProjectIcons, false)
   assert.deepEqual((await read()).settings.moderation, settings.moderation)

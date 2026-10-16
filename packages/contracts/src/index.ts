@@ -226,6 +226,12 @@ export type DownloadSelection = {
 
 export type ModerationPolicy = 'none' | 'automatic' | 'full'
 export type ModerationFailMode = 'manual' | 'reject'
+export type GitHubActionsCacheSettings = {
+  sharedEnabled: boolean
+  proxyEnabled: boolean
+  ttlSeconds: number
+  apiKey: string
+}
 export type SiteSettings = {
   appearance: {
     roundedProjectIcons: boolean
@@ -268,6 +274,7 @@ export type SiteSettings = {
     clientId: string
     tenant: 'consumers' | 'common' | 'organizations'
   }
+  githubActions: GitHubActionsCacheSettings
 }
 
 export type AccountView = {
