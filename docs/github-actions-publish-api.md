@@ -4,12 +4,13 @@
 
 ## 发布流程
 
-Action 使用项目令牌执行以下步骤。发布可以选择两种文件模式：
+Action 使用项目令牌执行以下步骤。发布可以选择三种文件模式：
 
 - `managed`：文件上传到 LunaPost 的 R2，由平台托管并提供稳定下载地址。
 - `github_release`：不上传文件，只登记 GitHub Release 资产链接；平台保存元数据并通过稳定下载地址 302 到 GitHub。
+- `hybrid`：同时上传到 R2 并登记 GitHub Release，默认优先 GitHub，R2 作为备用源。
 
-两种模式可以在同一个版本中混用，例如主 JAR 托管到 R2、调试包保留为 GitHub Release 链接。
+三种模式可以在同一个版本中混用，例如主 JAR 使用 `hybrid`，调试包使用 `github_release`，站点图标使用 `managed`。
 
 ### `managed` 模式
 
@@ -35,6 +36,31 @@ Action 使用项目令牌执行以下步骤。发布可以选择两种文件模�
 ```
 
 服务端只接受 GitHub Release 资产，不接受任意外部 URL，避免把发布 API 变成开放代理。服务端使用 GitHub API 确认仓库、tag、asset 和下载地址；公开仓库不需要额外密钥，私有仓库需要项目绑定的 GitHub App 或只读令牌。哈希可以由 Action 提供，也可以由服务端下载资产头部/内容后计算；无法验证哈希时发布进入 `pending_review`。
+
+### `hybrid` 模式
+
+同时提供上传会话和 GitHub Release 资产：
+
+```json
+{
+  "mode": "hybrid",
+  "uploadId": "upl_01...",
+  "github": {
+    "repository": "Andrea/example-mod",
+    "tag": "v1.4.0",
+    "asset": "example-mod-1.4.0.jar",
+    "sha256": "<64 lowercase hex>"
+  },
+  "filename": "example-mod-1.4.0.jar",
+  "sha256": "<64 lowercase hex>",
+  "primary": true,
+  "fileType": "mod"
+}
+```
+
+`uploadId` 和 GitHub 资产必须具有相同文件名、大小和 SHA-256。服务端分别校验两份内容，校验失败时不会把不一致的源加入同一个文件。发布后只有一个稳定 `fileId`，但包含两个下载源：GitHub 默认优先，R2 作为失败回退。
+
+现有区域和优先级策略继续生效。客户端也可以使用 `source=github-release` 或 `source=managed-r2` 强制选择源；正常客户端不需要知道源 URL。
 
 API 校验项目权限、文件哈希、版本唯一性、依赖关系和站点审核策略，返回 `published`、`pending_review` 或 `rejected`。
 
@@ -144,6 +170,20 @@ Content-Type: application/json
       "loaders": ["fabric", "neoforge"]
     },
     {
+      "mode": "hybrid",
+      "uploadId": "upl_01...",
+      "filename": "example-mod-1.4.0.jar",
+      "sha256": "<64 lowercase hex>",
+      "github": {
+        "repository": "Andrea/example-mod",
+        "tag": "v1.4.0",
+        "asset": "example-mod-1.4.0.jar"
+      },
+      "primary": true,
+      "fileType": "mod",
+      "loaders": ["fabric", "neoforge"]
+    },
+    {
       "mode": "github_release",
       "repository": "Andrea/example-mod",
       "tag": "v1.4.0",
@@ -164,9 +204,9 @@ Content-Type: application/json
 }
 ```
 
-文件 ID 由服务端根据项目、版本、模式和内容哈希生成；GitHub Action 不应自行生成平台文件 ID。`managed` 文件使用平台稳定存储 URL，`github_release` 文件使用平台稳定 URL 但源为 GitHub Release。相同 SHA-256 的托管文件可以被重新提交，服务端返回已有文件引用，避免 R2 重复存储。
+文件 ID 由服务端根据项目、版本、模式和内容哈希生成；GitHub Action 不应自行生成平台文件 ID。`managed` 文件使用平台稳定存储 URL，`github_release` 文件使用平台稳定 URL 但源为 GitHub Release，`hybrid` 文件使用同一个稳定 URL 并在两个源之间自动分流。相同 SHA-256 的托管文件可以被重新提交，服务端返回已有文件引用，避免 R2 重复存储。
 
-两种模式都支持后续补充镜像。将 GitHub Release 文件迁移到 R2 时创建新的 source，不改变 file ID 和稳定下载 URL；如果文件内容哈希改变，必须创建新文件和新版本。
+三种模式都支持后续补充镜像。将 GitHub Release 文件迁移到 R2 时创建新的 source，不改变 file ID 和稳定下载 URL；如果文件内容哈希改变，必须创建新文件和新版本。对于 `hybrid`，GitHub 是默认主源，R2 只承担失败回退和明确选择 R2 的流量。
 
 成功响应：
 
@@ -249,7 +289,7 @@ DELETE /api/v1/projects/example-mod/releases/rel_01...
 1. 增加 API Key Bearer 校验、项目绑定和作用域检查；现有账户 API Key 兼容迁移，但发布令牌默认只能绑定一个项目。
 2. 增加 `publish_uploads`、`publish_releases`、`publish_tokens` 表和 R2 multipart 生命周期清理。
 3. 实现小文件 `managed` 上传和幂等发布；接入现有 `projectSchema`、`versionSchema`、`validateDependencies` 和审核策略。
-4. 实现 `github_release` 资产解析、白名单校验和 GitHub provenance。
+4. 实现 `github_release` 资产解析、白名单校验、`hybrid` 双源校验和 GitHub provenance。
 5. 实现大文件分片上传和发布查询。
 6. 增加 OpenAPI 文档、Action 示例和端到端测试。
 
