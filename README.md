@@ -8,6 +8,7 @@
 
 - **项目发布**：项目元数据（分类、关键词、客户端/服务端环境、社区链接、画廊、许可证）、多版本、多文件、多下载源
 - **稳定下载**：`/api/v1/files/:fileId/download` 不随镜像切换而变化，按区域与 `cdnRules[]` 自动选源
+- **自动发布**：GitHub Actions 发布 API 的认证、上传、幂等和版本提交契约见 [`docs/github-actions-publish-api.md`](docs/github-actions-publish-api.md)
 - **依赖解析**：站内依赖与 Modrinth / CurseForge 外部依赖，SemVer / exact 约束，安装清单解析
 - **启动器兼容**：Modrinth API v2 只读兼容层（`/v2` 与 `/api/modrinth/v2`）
 - **账户与组织**：注册/登录、JWT 会话、API Key、公开资料、组织与项目协作角色、邀请与站内通知、收藏夹
