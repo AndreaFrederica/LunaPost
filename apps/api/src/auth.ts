@@ -1,7 +1,7 @@
 import type { AccountMetadata, Organization, Project } from '@andrea/contracts'
 import { drizzle } from 'drizzle-orm/d1'
-import { and, desc, eq, isNull } from 'drizzle-orm'
-import { accounts as accountsTable, apiKeys as apiKeysTable, sessions as sessionsTable, projectDocuments as projectDocumentsTable, projectFavorites as projectFavoritesTable, downloadEvents as downloadEventsTable } from './db/schema.js'
+import { and, count, desc, eq, isNull } from 'drizzle-orm'
+import { accounts as accountsTable, apiKeys as apiKeysTable, sessions as sessionsTable, projectDocuments as projectDocumentsTable, projectFavorites as projectFavoritesTable, downloadEvents as downloadEventsTable, organizations as organizationsTable, organizationMembers as organizationMembersTable, projectMembers as projectMembersTable, notifications as notificationsTable } from './db/schema.js'
 
 export type AccountRole = 'user' | 'developer' | 'admin' | 'root'
 
@@ -511,25 +511,25 @@ export class D1AccountStore implements AccountStore {
     return Number(result.meta?.changes ?? 0) > 0
   }
   async isProjectFavorite(accountId: string, projectSlug: string) {
-    const row = await this.db.prepare('SELECT 1 as found FROM project_favorites WHERE account_id = ? AND project_slug = ?').bind(accountId, projectSlug).first<{ found: number }>()
-    return Boolean(row)
+    return Boolean(await drizzle(this.db as unknown as D1Database).select({ accountId: projectFavoritesTable.accountId }).from(projectFavoritesTable).where(and(eq(projectFavoritesTable.accountId, accountId), eq(projectFavoritesTable.projectSlug, projectSlug))).get())
   }
   async setProjectFavorite(accountId: string, projectSlug: string, favorite: boolean) {
-    if (favorite) await this.db.prepare('INSERT INTO project_favorites (account_id, project_slug, created_at) VALUES (?, ?, ?) ON CONFLICT(account_id, project_slug) DO NOTHING').bind(accountId, projectSlug, new Date().toISOString()).run()
-    else await this.db.prepare('DELETE FROM project_favorites WHERE account_id = ? AND project_slug = ?').bind(accountId, projectSlug).run()
+    const orm = drizzle(this.db as unknown as D1Database)
+    if (favorite) await orm.insert(projectFavoritesTable).values({ accountId, projectSlug, createdAt: new Date().toISOString() }).onConflictDoNothing().run()
+    else await orm.delete(projectFavoritesTable).where(and(eq(projectFavoritesTable.accountId, accountId), eq(projectFavoritesTable.projectSlug, projectSlug))).run()
     return favorite
   }
   async listProjectFavorites(accountId: string) {
-    const result = await this.db.prepare('SELECT account_id as accountId, project_slug as projectSlug, created_at as createdAt FROM project_favorites WHERE account_id = ? ORDER BY created_at DESC').bind(accountId).all<ProjectFavorite>()
-    return result.results ?? []
+    return await drizzle(this.db as unknown as D1Database).select({ accountId: projectFavoritesTable.accountId, projectSlug: projectFavoritesTable.projectSlug, createdAt: projectFavoritesTable.createdAt }).from(projectFavoritesTable).where(eq(projectFavoritesTable.accountId, accountId)).orderBy(desc(projectFavoritesTable.createdAt)).all() as ProjectFavorite[]
   }
   async getProjectEngagement(projectSlug: string) {
-    const downloads = await this.db.prepare('SELECT COUNT(*) as count FROM download_events WHERE project_slug = ?').bind(projectSlug).first<{ count: number | string }>()
-    const favorites = await this.db.prepare('SELECT COUNT(*) as count FROM project_favorites WHERE project_slug = ?').bind(projectSlug).first<{ count: number | string }>()
-    return { downloads: Number(downloads?.count ?? 0), favorites: Number(favorites?.count ?? 0) }
+    const orm = drizzle(this.db as unknown as D1Database)
+    const downloads = await orm.select({ value: count() }).from(downloadEventsTable).where(eq(downloadEventsTable.projectSlug, projectSlug)).get()
+    const favorites = await orm.select({ value: count() }).from(projectFavoritesTable).where(eq(projectFavoritesTable.projectSlug, projectSlug)).get()
+    return { downloads: Number(downloads?.value ?? 0), favorites: Number(favorites?.value ?? 0) }
   }
   async recordDownload(event: DownloadEvent) {
-    await this.db.prepare('INSERT INTO download_events (id, project_slug, file_id, version_id, account_id, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(event.id, event.projectSlug, event.fileId, event.versionId, event.accountId, event.source, event.createdAt).run()
+    await drizzle(this.db as unknown as D1Database).insert(downloadEventsTable).values({ id: event.id, projectSlug: event.projectSlug, fileId: event.fileId, versionId: event.versionId, accountId: event.accountId, source: event.source, createdAt: event.createdAt }).run()
   }
   async getDashboardStats(projectSlugs?: string[]) {
     const filter = projectSlugs?.length ? ` WHERE project_slug IN (${projectSlugs.map(() => '?').join(',')})` : ''
