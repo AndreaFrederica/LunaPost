@@ -68,6 +68,21 @@ API 校验项目权限、文件哈希、版本唯一性、依赖关系和站点�
 
 ## 认证和权限
 
+除了项目级发布令牌，还支持账户级开发者 API Key。开发者 API Key 可以用于创建和管理项目，但权限同时受账户角色和 scope 限制：只有 `developer`、`admin`、`root` 账户可以执行写操作，普通用户即使拿到写 scope 也只能读取允许的数据。
+
+建议的账户级 scope：
+
+| 作用域 | 能力 |
+| --- | --- |
+| `project:create` | 创建项目，并将当前账户设为所有者 |
+| `project:read` | 读取当前账户可见的项目、成员和发布状态 |
+| `project:write` | 修改项目元数据、版本配置、依赖和成员 |
+| `release:write` | 上传文件和创建发布 |
+| `release:publish` | 请求公开发布；仍受站点审核策略约束 |
+| `release:delete` | 撤回草稿或待审核发布 |
+
+推荐的 GitHub Actions 配置方式是使用项目级发布令牌；需要由 Action 自动创建项目或管理多个项目时，才使用账户级开发者 API Key。账户级 Key 不允许通过请求参数切换账户，也不能修改不属于当前账户或组织成员范围内的项目。
+
 请求使用：
 
 ```http
@@ -86,6 +101,23 @@ Authorization: Bearer lp_live_xxxxxxxxx
 | `release:publish` | 绕过草稿状态并请求公开审核 |
 
 项目令牌只能访问绑定项目。即使账户是管理员，令牌也不能通过 URL 修改其他项目。所有发布接口记录令牌 ID、项目、GitHub repository、commit SHA 和 GitHub Actions run ID。
+
+所有机器凭据统一通过 `Authorization: Bearer ...` 传递。服务端先解析 Key，再检查 `account.role` 和 scope，最后调用现有的 `canManageProject` / `canAdminProject` 规则。缺少凭据返回 `401`，角色不足返回 `403 ACCOUNT_ROLE_REQUIRED`，scope 不足返回 `403 SCOPE_REQUIRED`。
+
+账户级 Key 的典型调用：
+
+```http
+POST /api/v1/admin/projects
+Authorization: Bearer lp_live_developer_xxxxxxxxx
+Content-Type: application/json
+```
+
+```http
+PUT /api/v1/admin/projects/example-mod
+Authorization: Bearer lp_live_developer_xxxxxxxxx
+```
+
+这两个接口分别需要 `project:create` 和 `project:write`；发布接口还需要 `release:write`。项目成员的 owner/admin/editor 权限仍然生效，API Key 不会绕过项目成员权限。
 
 ## 创建上传会话
 
@@ -286,7 +318,7 @@ DELETE /api/v1/projects/example-mod/releases/rel_01...
 
 ## 实现顺序
 
-1. 增加 API Key Bearer 校验、项目绑定和作用域检查；现有账户 API Key 兼容迁移，但发布令牌默认只能绑定一个项目。
+1. 增加 API Key Bearer 校验、账户级 scope、项目绑定和作用域检查；现有账户 API Key 兼容迁移，但发布令牌默认只能绑定一个项目。
 2. 增加 `publish_uploads`、`publish_releases`、`publish_tokens` 表和 R2 multipart 生命周期清理。
 3. 实现小文件 `managed` 上传和幂等发布；接入现有 `projectSchema`、`versionSchema`、`validateDependencies` 和审核策略。
 4. 实现 `github_release` 资产解析、白名单校验、`hybrid` 双源校验和 GitHub provenance。
