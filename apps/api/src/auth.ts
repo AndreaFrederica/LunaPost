@@ -1,7 +1,7 @@
 import type { AccountMetadata, Organization, Project } from '@andrea/contracts'
 import { drizzle } from 'drizzle-orm/d1'
-import { and, count, desc, eq, isNull } from 'drizzle-orm'
-import { accounts as accountsTable, apiKeys as apiKeysTable, sessions as sessionsTable, projectDocuments as projectDocumentsTable, projectFavorites as projectFavoritesTable, downloadEvents as downloadEventsTable, organizations as organizationsTable, organizationMembers as organizationMembersTable, projectMembers as projectMembersTable, notifications as notificationsTable } from './db/schema.js'
+import { and, asc, count, desc, eq, gt, inArray, isNull, lte, or } from 'drizzle-orm'
+import { accounts as accountsTable, apiKeys as apiKeysTable, sessions as sessionsTable, projectDocuments as projectDocumentsTable, projects as projectsTable, projectFavorites as projectFavoritesTable, downloadEvents as downloadEventsTable, organizations as organizationsTable, organizationMembers as organizationMembersTable, projectMembers as projectMembersTable, notifications as notificationsTable, projectInvitations as projectInvitationsTable, appMeta as appMetaTable, yggSessions as yggSessionsTable, yggRevokedTokens as yggRevokedTokensTable, mojangOauthTokens as mojangOauthTokensTable, projectPublishTokens as projectPublishTokensTable, publishUploads as publishUploadsTable } from './db/schema.js'
 
 export type AccountRole = 'user' | 'developer' | 'admin' | 'root'
 
@@ -45,6 +45,20 @@ export type ProjectFavorite = { accountId: string; projectSlug: string; createdA
 export type DownloadEvent = { id: string; projectSlug: string; fileId: string; versionId: string; accountId: string | null; source: string | null; createdAt: string }
 export type ProjectEngagement = { downloads: number; favorites: number }
 export type DashboardStats = { downloads: number; favorites: number; topDownloads: Array<{ projectSlug: string; count: number }>; topFavorites: Array<{ projectSlug: string; count: number }> }
+export type PublishUploadRecord = {
+  id: string
+  projectSlug: string
+  accountId: string
+  filename: string
+  size: number
+  sha256: string | null
+  contentType: string
+  storageKey: string | null
+  multipartId: string | null
+  status: 'created' | 'complete'
+  createdAt: string
+  expiresAt: string
+}
 
 export interface AccountStore {
   countAccounts(): Promise<number>
@@ -92,6 +106,10 @@ export interface AccountStore {
   revokeYggToken(tokenHash: string, accountId: string | null, revokedAt: string, expiresAt: string | null): Promise<void>
   isYggTokenRevoked(tokenHash: string): Promise<boolean>
   saveMojangToken(accountId: string, ciphertext: string, updatedAt: string, expiresAt: string | null): Promise<void>
+  createPublishUpload(upload: PublishUploadRecord): Promise<void>
+  getPublishUpload(id: string, accountId: string): Promise<PublishUploadRecord | null>
+  getCompletedPublishUpload(id: string, accountId: string, projectSlug: string): Promise<PublishUploadRecord | null>
+  completePublishUpload(id: string): Promise<void>
   findAccountByEmail(email: string): Promise<AccountRecord | null>
   getAccount(id: string): Promise<AccountRecord | null>
   createAccount(account: AccountRecord): Promise<void>
@@ -197,6 +215,7 @@ export class MemoryAccountStore implements AccountStore {
   private readonly appSettings = new Map<string, string>()
   private readonly yggSessions = new Map<string, YggSessionRecord>()
   private readonly revokedYggTokens = new Map<string, { expiresAt: string | null }>()
+  private readonly publishUploads = new Map<string, PublishUploadRecord>()
 
   async findAccountByEmail(email: string) {
     return [...this.accounts.values()].find((account) => account.email === email) ?? null
@@ -230,6 +249,14 @@ export class MemoryAccountStore implements AccountStore {
     if (existed) for (const [key, session] of this.sessions) if (session.accountId === id) this.sessions.delete(key)
     if (existed) for (const [key, apiKey] of this.apiKeys) if (apiKey.accountId === id) this.apiKeys.delete(key)
     if (existed) for (const [key, favorite] of this.favorites) if (favorite.accountId === id) this.favorites.delete(key)
+    if (existed) for (const [key, member] of this.projectMembers) if (member.accountId === id) this.projectMembers.delete(key)
+    if (existed) for (const [key, member] of this.organizationMembers) if (member.accountId === id) this.organizationMembers.delete(key)
+    if (existed) for (const [key, invitation] of this.invitations) if (invitation.inviterId === id || invitation.inviteeId === id) this.invitations.delete(key)
+    if (existed) for (const [key, notification] of this.notifications) if (notification.accountId === id) this.notifications.delete(key)
+    if (existed) for (const [key, session] of this.yggSessions) if (session.accountId === id) this.yggSessions.delete(key)
+    if (existed) for (const [key, upload] of this.publishUploads) if (upload.accountId === id) this.publishUploads.delete(key)
+    if (existed) for (const [key, organization] of this.organizations) if (organization.ownerId === id) { this.organizations.delete(key); for (const memberKey of this.organizationMembers.keys()) if (memberKey.startsWith(`${key}:`)) this.organizationMembers.delete(memberKey) }
+    if (existed) for (const [key, project] of this.projects) if (project.ownerType === 'account' && project.ownerId === id) { this.projects.delete(key); for (const memberKey of this.projectMembers.keys()) if (memberKey.startsWith(`${project.id}:`)) this.projectMembers.delete(memberKey) }
     return existed
   }
 
@@ -324,6 +351,19 @@ export class MemoryAccountStore implements AccountStore {
   async revokeYggToken(tokenHash: string, _accountId: string | null, _revokedAt: string, expiresAt: string | null) { this.revokedYggTokens.set(tokenHash, { expiresAt }) }
   async isYggTokenRevoked(tokenHash: string) { const item = this.revokedYggTokens.get(tokenHash); if (!item) return false; if (item.expiresAt && Date.parse(item.expiresAt) <= Date.now()) { this.revokedYggTokens.delete(tokenHash); return false } return true }
   async saveMojangToken(accountId: string, ciphertext: string, updatedAt: string, expiresAt: string | null) { this.appSettings.set(`mojang-token:${accountId}`, JSON.stringify({ ciphertext, updatedAt, expiresAt })) }
+  async createPublishUpload(upload: PublishUploadRecord) { this.publishUploads.set(upload.id, upload) }
+  async getPublishUpload(id: string, accountId: string) {
+    const upload = this.publishUploads.get(id)
+    return upload?.accountId === accountId ? upload : null
+  }
+  async getCompletedPublishUpload(id: string, accountId: string, projectSlug: string) {
+    const upload = await this.getPublishUpload(id, accountId)
+    return upload?.projectSlug === projectSlug && upload.status === 'complete' ? upload : null
+  }
+  async completePublishUpload(id: string) {
+    const upload = this.publishUploads.get(id)
+    if (upload) upload.status = 'complete'
+  }
 
   async getAccount(id: string) {
     return this.accounts.get(id) ?? null
@@ -385,9 +425,20 @@ export class D1AccountStore implements AccountStore {
 
   async deleteAccount(id: string) {
     const orm = drizzle(this.db as unknown as D1Database)
+    if (!await this.getAccount(id)) return false
     await orm.delete(sessionsTable).where(eq(sessionsTable.accountId, id)).run()
     await orm.delete(apiKeysTable).where(eq(apiKeysTable.accountId, id)).run()
     await orm.delete(projectFavoritesTable).where(eq(projectFavoritesTable.accountId, id)).run()
+    await orm.delete(projectMembersTable).where(eq(projectMembersTable.accountId, id)).run()
+    await orm.delete(organizationMembersTable).where(eq(organizationMembersTable.accountId, id)).run()
+    await orm.delete(projectInvitationsTable).where(or(eq(projectInvitationsTable.inviterId, id), eq(projectInvitationsTable.inviteeId, id))).run()
+    await orm.delete(notificationsTable).where(eq(notificationsTable.accountId, id)).run()
+    await orm.delete(yggSessionsTable).where(eq(yggSessionsTable.accountId, id)).run()
+    await orm.delete(mojangOauthTokensTable).where(eq(mojangOauthTokensTable.accountId, id)).run()
+    await orm.delete(projectPublishTokensTable).where(eq(projectPublishTokensTable.accountId, id)).run()
+    await orm.delete(publishUploadsTable).where(eq(publishUploadsTable.accountId, id)).run()
+    await orm.update(projectsTable).set({ ownerId: null }).where(eq(projectsTable.ownerId, id)).run()
+    await orm.delete(organizationsTable).where(eq(organizationsTable.ownerId, id)).run()
     const result = await orm.delete(accountsTable).where(eq(accountsTable.id, id)).run()
     return Number(result.meta?.changes ?? 0) > 0
   }
@@ -405,10 +456,10 @@ export class D1AccountStore implements AccountStore {
     const row = await drizzle(this.db as unknown as D1Database).select().from(apiKeysTable).where(and(eq(apiKeysTable.keyHash, keyHash), isNull(apiKeysTable.revokedAt))).get()
     return row ? { ...row, scopes: JSON.parse(row.scopes) as string[] } : null
   }
-  async createProjectPublishToken(token: ProjectPublishToken) { await this.db.prepare('INSERT INTO project_publish_tokens (id, project_slug, account_id, token_hash, name, scopes, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(token.id, token.projectSlug, token.accountId, token.tokenHash, token.name, JSON.stringify(token.scopes), token.createdAt, token.revokedAt).run() }
-  async findProjectPublishToken(tokenHash: string) { const row = await this.db.prepare('SELECT id, project_slug as projectSlug, account_id as accountId, token_hash as tokenHash, name, scopes, created_at as createdAt, revoked_at as revokedAt FROM project_publish_tokens WHERE token_hash = ? AND revoked_at IS NULL').bind(tokenHash).first<any>(); return row ? { ...row, scopes: JSON.parse(row.scopes) as string[] } : null }
-  async listProjectPublishTokens(projectSlug: string) { const rows = await this.db.prepare('SELECT id, project_slug as projectSlug, name, scopes, created_at as createdAt, revoked_at as revokedAt FROM project_publish_tokens WHERE project_slug = ? ORDER BY created_at DESC').bind(projectSlug).all<any>(); return (rows.results ?? []).map((row) => ({ ...row, scopes: JSON.parse(row.scopes) })) }
-  async revokeProjectPublishToken(projectSlug: string, id: string) { const result = await this.db.prepare('UPDATE project_publish_tokens SET revoked_at = ? WHERE id = ? AND project_slug = ? AND revoked_at IS NULL').bind(new Date().toISOString(), id, projectSlug).run() as { meta?: { changes?: number } }; return Number(result.meta?.changes ?? 0) > 0 }
+  async createProjectPublishToken(token: ProjectPublishToken) { await drizzle(this.db as unknown as D1Database).insert(projectPublishTokensTable).values({ id: token.id, projectSlug: token.projectSlug, accountId: token.accountId, tokenHash: token.tokenHash, name: token.name, scopes: JSON.stringify(token.scopes), createdAt: token.createdAt, revokedAt: token.revokedAt }).run() }
+  async findProjectPublishToken(tokenHash: string) { const row = await drizzle(this.db as unknown as D1Database).select().from(projectPublishTokensTable).where(and(eq(projectPublishTokensTable.tokenHash, tokenHash), isNull(projectPublishTokensTable.revokedAt))).get(); return row ? { ...row, scopes: JSON.parse(row.scopes) as string[] } : null }
+  async listProjectPublishTokens(projectSlug: string) { const rows = await drizzle(this.db as unknown as D1Database).select().from(projectPublishTokensTable).where(eq(projectPublishTokensTable.projectSlug, projectSlug)).orderBy(desc(projectPublishTokensTable.createdAt)).all(); return rows.map((row) => ({ ...row, scopes: JSON.parse(row.scopes) })) }
+  async revokeProjectPublishToken(projectSlug: string, id: string) { const result = await drizzle(this.db as unknown as D1Database).update(projectPublishTokensTable).set({ revokedAt: new Date().toISOString() }).where(and(eq(projectPublishTokensTable.id, id), eq(projectPublishTokensTable.projectSlug, projectSlug), isNull(projectPublishTokensTable.revokedAt))).run(); return Number(result.meta?.changes ?? 0) > 0 }
 
   async revokeApiKey(accountId: string, id: string) {
     const result = await drizzle(this.db as unknown as D1Database).update(apiKeysTable).set({ revokedAt: new Date().toISOString() }).where(and(eq(apiKeysTable.id, id), eq(apiKeysTable.accountId, accountId), isNull(apiKeysTable.revokedAt))).run()
@@ -438,76 +489,73 @@ export class D1AccountStore implements AccountStore {
     // project_documents is the rich JSON source used by the catalog, while the
     // normalized projects row backs foreign keys for members/invitations. Keep
     // both representations in sync so D1 relationship imports can succeed.
-    const owner = project.ownerId ? await this.db.prepare('SELECT id FROM accounts WHERE id = ?').bind(project.ownerId).first<{ id: string }>() : null
-    await this.db.prepare('INSERT INTO projects (id, slug, title, type, description, owner_id, repository_url, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET id = excluded.id, title = excluded.title, type = excluded.type, description = excluded.description, owner_id = excluded.owner_id, repository_url = excluded.repository_url, status = excluded.status, updated_at = excluded.updated_at').bind(project.id, project.slug, project.title, project.type, project.description, owner?.id ?? null, project.repositoryUrl ?? null, project.status, now, now).run()
-    await this.db.prepare('INSERT INTO project_documents (slug, project_json, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET project_json = excluded.project_json, updated_at = excluded.updated_at').bind(project.slug, JSON.stringify(project), now, now).run()
+    const orm = drizzle(this.db as unknown as D1Database)
+    const owner = project.ownerId ? await orm.select({ id: accountsTable.id }).from(accountsTable).where(eq(accountsTable.id, project.ownerId)).get() : null
+    await orm.insert(projectsTable).values({ id: project.id, slug: project.slug, title: project.title, type: project.type, description: project.description, ownerId: owner?.id ?? null, repositoryUrl: project.repositoryUrl ?? null, status: project.status, createdAt: now, updatedAt: now }).onConflictDoUpdate({ target: projectsTable.slug, set: { id: project.id, title: project.title, type: project.type, description: project.description, ownerId: owner?.id ?? null, repositoryUrl: project.repositoryUrl ?? null, status: project.status, updatedAt: now } }).run()
+    await orm.insert(projectDocumentsTable).values({ slug: project.slug, projectJson: JSON.stringify(project), createdAt: now, updatedAt: now }).onConflictDoUpdate({ target: projectDocumentsTable.slug, set: { projectJson: JSON.stringify(project), updatedAt: now } }).run()
   }
 
   async deleteStoredProject(slug: string) {
-    const result = await this.db.prepare('DELETE FROM project_documents WHERE slug = ?').bind(slug).run() as { meta?: { changes?: number } }
+    const result = await drizzle(this.db as unknown as D1Database).delete(projectDocumentsTable).where(eq(projectDocumentsTable.slug, slug)).run()
     return Number(result.meta?.changes ?? 0) > 0
   }
 
   async listOrganizations(accountId?: string) {
-    const query = accountId
-      ? 'SELECT o.id, o.slug, o.name, o.description, o.avatar_url as avatarUrl, o.created_at as createdAt, o.owner_id as ownerId FROM organizations o JOIN organization_members m ON m.organization_id = o.id WHERE m.account_id = ? ORDER BY o.name'
-      : 'SELECT id, slug, name, description, avatar_url as avatarUrl, created_at as createdAt, owner_id as ownerId FROM organizations ORDER BY name'
-    const result = accountId
-      ? await this.db.prepare(query).bind(accountId).all<OrganizationRecord>()
-      : await this.db.prepare(query).bind().all<OrganizationRecord>()
-    return result.results ?? []
+    const orm = drizzle(this.db as unknown as D1Database)
+    const fields = { id: organizationsTable.id, slug: organizationsTable.slug, name: organizationsTable.name, description: organizationsTable.description, avatarUrl: organizationsTable.avatarUrl, createdAt: organizationsTable.createdAt, ownerId: organizationsTable.ownerId }
+    const query = orm.select(fields).from(organizationsTable).orderBy(asc(organizationsTable.name))
+    if (accountId) return await query.innerJoin(organizationMembersTable, eq(organizationMembersTable.organizationId, organizationsTable.id)).where(eq(organizationMembersTable.accountId, accountId)).all() as OrganizationRecord[]
+    return await query.all() as OrganizationRecord[]
   }
   async getOrganization(slugOrId: string) {
-    return this.db.prepare('SELECT id, slug, name, description, avatar_url as avatarUrl, created_at as createdAt, owner_id as ownerId FROM organizations WHERE slug = ? OR id = ?').bind(slugOrId, slugOrId).first<OrganizationRecord>()
+    return await drizzle(this.db as unknown as D1Database).select({ id: organizationsTable.id, slug: organizationsTable.slug, name: organizationsTable.name, description: organizationsTable.description, avatarUrl: organizationsTable.avatarUrl, createdAt: organizationsTable.createdAt, ownerId: organizationsTable.ownerId }).from(organizationsTable).where(or(eq(organizationsTable.slug, slugOrId), eq(organizationsTable.id, slugOrId))).get() as OrganizationRecord | null
   }
   async createOrganization(organization: OrganizationRecord) {
-    await this.db.prepare('INSERT INTO organizations (id, slug, name, description, avatar_url, created_at, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(organization.id, organization.slug, organization.name, organization.description, organization.avatarUrl ?? null, organization.createdAt, organization.ownerId).run()
+    await drizzle(this.db as unknown as D1Database).insert(organizationsTable).values({ id: organization.id, slug: organization.slug, name: organization.name, description: organization.description, avatarUrl: organization.avatarUrl ?? null, createdAt: organization.createdAt, ownerId: organization.ownerId }).run()
   }
   async listOrganizationMembers(organizationId: string) {
-    const result = await this.db.prepare('SELECT m.organization_id as organizationId, m.account_id as accountId, a.email, m.role FROM organization_members m JOIN accounts a ON a.id = m.account_id WHERE m.organization_id = ? ORDER BY CASE m.role WHEN \'owner\' THEN 0 WHEN \'admin\' THEN 1 ELSE 2 END, a.email').bind(organizationId).all<OrganizationMember>()
-    return result.results ?? []
+    const rows = await drizzle(this.db as unknown as D1Database).select({ organizationId: organizationMembersTable.organizationId, accountId: organizationMembersTable.accountId, email: accountsTable.email, role: organizationMembersTable.role }).from(organizationMembersTable).innerJoin(accountsTable, eq(accountsTable.id, organizationMembersTable.accountId)).where(eq(organizationMembersTable.organizationId, organizationId)).orderBy(asc(accountsTable.email)).all()
+    return rows as OrganizationMember[]
   }
   async setOrganizationMember(organizationId: string, accountId: string, role: OrganizationMemberRole) {
-    await this.db.prepare('INSERT INTO organization_members (organization_id, account_id, role) VALUES (?, ?, ?) ON CONFLICT(organization_id, account_id) DO UPDATE SET role = excluded.role').bind(organizationId, accountId, role).run()
+    await drizzle(this.db as unknown as D1Database).insert(organizationMembersTable).values({ organizationId, accountId, role }).onConflictDoUpdate({ target: [organizationMembersTable.organizationId, organizationMembersTable.accountId], set: { role } }).run()
   }
 
   async listProjectMembers(projectId: string) {
-    const result = await this.db.prepare('SELECT pm.project_id as projectId, pm.account_id as accountId, a.email, pm.role FROM project_members pm JOIN accounts a ON a.id = pm.account_id WHERE pm.project_id = ? ORDER BY CASE pm.role WHEN \'owner\' THEN 0 WHEN \'admin\' THEN 1 ELSE 2 END, a.email').bind(projectId).all<ProjectMember>()
-    return result.results ?? []
+    return await drizzle(this.db as unknown as D1Database).select({ projectId: projectMembersTable.projectId, accountId: projectMembersTable.accountId, email: accountsTable.email, role: projectMembersTable.role }).from(projectMembersTable).innerJoin(accountsTable, eq(accountsTable.id, projectMembersTable.accountId)).where(eq(projectMembersTable.projectId, projectId)).orderBy(asc(accountsTable.email)).all() as ProjectMember[]
   }
 
   async setProjectMember(projectId: string, accountId: string, role: ProjectMemberRole) {
-    await this.db.prepare('INSERT INTO project_members (project_id, account_id, role) VALUES (?, ?, ?) ON CONFLICT(project_id, account_id) DO UPDATE SET role = excluded.role').bind(projectId, accountId, role).run()
+    await drizzle(this.db as unknown as D1Database).insert(projectMembersTable).values({ projectId, accountId, role }).onConflictDoUpdate({ target: [projectMembersTable.projectId, projectMembersTable.accountId], set: { role } }).run()
   }
 
   async removeProjectMember(projectId: string, accountId: string) {
-    const result = await this.db.prepare('DELETE FROM project_members WHERE project_id = ? AND account_id = ?').bind(projectId, accountId).run() as { meta?: { changes?: number } }
+    const result = await drizzle(this.db as unknown as D1Database).delete(projectMembersTable).where(and(eq(projectMembersTable.projectId, projectId), eq(projectMembersTable.accountId, accountId))).run()
     return Number(result.meta?.changes ?? 0) > 0
   }
 
   async createInvitation(invitation: ProjectInvitation) {
-    await this.db.prepare('INSERT INTO project_invitations (id, project_id, project_slug, inviter_id, invitee_id, email, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(invitation.id, invitation.projectId, invitation.projectSlug, invitation.inviterId, invitation.inviteeId, invitation.email, invitation.role, invitation.status, invitation.createdAt).run()
+    await drizzle(this.db as unknown as D1Database).insert(projectInvitationsTable).values({ id: invitation.id, projectId: invitation.projectId, projectSlug: invitation.projectSlug, inviterId: invitation.inviterId, inviteeId: invitation.inviteeId, email: invitation.email, role: invitation.role, status: invitation.status, createdAt: invitation.createdAt }).run()
   }
   async listInvitations(accountId: string, email: string) {
-    const result = await this.db.prepare('SELECT id, project_id as projectId, project_slug as projectSlug, inviter_id as inviterId, invitee_id as inviteeId, email, role, status, created_at as createdAt FROM project_invitations WHERE status = \'pending\' AND (invitee_id = ? OR email = ?) ORDER BY created_at DESC').bind(accountId, email.toLowerCase()).all<ProjectInvitation>()
-    return result.results ?? []
+    return await drizzle(this.db as unknown as D1Database).select().from(projectInvitationsTable).where(and(eq(projectInvitationsTable.status, 'pending'), or(eq(projectInvitationsTable.inviteeId, accountId), eq(projectInvitationsTable.email, email.toLowerCase())))).orderBy(desc(projectInvitationsTable.createdAt)).all() as ProjectInvitation[]
   }
   async respondInvitation(id: string, accountId: string, status: 'accepted' | 'declined') {
-    const invitation = await this.db.prepare('SELECT id, project_id as projectId, project_slug as projectSlug, inviter_id as inviterId, invitee_id as inviteeId, email, role, status, created_at as createdAt FROM project_invitations WHERE id = ? AND status = \'pending\'').bind(id).first<ProjectInvitation>()
+    const invitation = await drizzle(this.db as unknown as D1Database).select().from(projectInvitationsTable).where(and(eq(projectInvitationsTable.id, id), eq(projectInvitationsTable.status, 'pending'))).get() as ProjectInvitation | null
     if (!invitation || (invitation.inviteeId && invitation.inviteeId !== accountId)) return false
-    await this.db.prepare('UPDATE project_invitations SET status = ? WHERE id = ?').bind(status, id).run()
+    await drizzle(this.db as unknown as D1Database).update(projectInvitationsTable).set({ status }).where(eq(projectInvitationsTable.id, id)).run()
     if (status === 'accepted') await this.setProjectMember(invitation.projectId, accountId, invitation.role)
     return true
   }
   async createNotification(notification: SiteNotification) {
-    await this.db.prepare('INSERT INTO notifications (id, account_id, type, title, body, data, read_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(notification.id, notification.accountId, notification.type, notification.title, notification.body, JSON.stringify(notification.data), notification.readAt, notification.createdAt).run()
+    await drizzle(this.db as unknown as D1Database).insert(notificationsTable).values({ id: notification.id, accountId: notification.accountId, type: notification.type, title: notification.title, body: notification.body, data: JSON.stringify(notification.data), readAt: notification.readAt, createdAt: notification.createdAt }).run()
   }
   async listNotifications(accountId: string) {
-    const result = await this.db.prepare('SELECT id, account_id as accountId, type, title, body, data, read_at as readAt, created_at as createdAt FROM notifications WHERE account_id = ? ORDER BY created_at DESC LIMIT 100').bind(accountId).all<{ id: string; accountId: string; type: string; title: string; body: string; data: string; readAt: string | null; createdAt: string }>()
-    return (result.results ?? []).map((item) => ({ ...item, data: JSON.parse(item.data) as Record<string, unknown> }))
+    const rows = await drizzle(this.db as unknown as D1Database).select().from(notificationsTable).where(eq(notificationsTable.accountId, accountId)).orderBy(desc(notificationsTable.createdAt)).limit(100).all()
+    return rows.map((item) => ({ ...item, data: JSON.parse(item.data) as Record<string, unknown> })) as SiteNotification[]
   }
   async markNotificationRead(accountId: string, id: string) {
-    const result = await this.db.prepare('UPDATE notifications SET read_at = ? WHERE id = ? AND account_id = ?').bind(new Date().toISOString(), id, accountId).run() as { meta?: { changes?: number } }
+    const result = await drizzle(this.db as unknown as D1Database).update(notificationsTable).set({ readAt: new Date().toISOString() }).where(and(eq(notificationsTable.id, id), eq(notificationsTable.accountId, accountId))).run()
     return Number(result.meta?.changes ?? 0) > 0
   }
   async isProjectFavorite(accountId: string, projectSlug: string) {
@@ -532,28 +580,34 @@ export class D1AccountStore implements AccountStore {
     await drizzle(this.db as unknown as D1Database).insert(downloadEventsTable).values({ id: event.id, projectSlug: event.projectSlug, fileId: event.fileId, versionId: event.versionId, accountId: event.accountId, source: event.source, createdAt: event.createdAt }).run()
   }
   async getDashboardStats(projectSlugs?: string[]) {
-    const filter = projectSlugs?.length ? ` WHERE project_slug IN (${projectSlugs.map(() => '?').join(',')})` : ''
-    const bindings = projectSlugs ?? []
-    const downloads = await this.db.prepare(`SELECT COUNT(*) as count FROM download_events${filter}`).bind(...bindings).first<{ count: number | string }>()
-    const favorites = await this.db.prepare(`SELECT COUNT(*) as count FROM project_favorites${filter}`).bind(...bindings).first<{ count: number | string }>()
-    const topDownloads = await this.db.prepare(`SELECT project_slug as projectSlug, COUNT(*) as count FROM download_events${filter} GROUP BY project_slug ORDER BY count DESC LIMIT 5`).bind(...bindings).all<{ projectSlug: string; count: number | string }>()
-    const topFavorites = await this.db.prepare(`SELECT project_slug as projectSlug, COUNT(*) as count FROM project_favorites${filter} GROUP BY project_slug ORDER BY count DESC LIMIT 5`).bind(...bindings).all<{ projectSlug: string; count: number | string }>()
-    return { downloads: Number(downloads?.count ?? 0), favorites: Number(favorites?.count ?? 0), topDownloads: (topDownloads.results ?? []).map((item) => ({ projectSlug: item.projectSlug, count: Number(item.count) })), topFavorites: (topFavorites.results ?? []).map((item) => ({ projectSlug: item.projectSlug, count: Number(item.count) })) }
+    if (projectSlugs && projectSlugs.length === 0) return { downloads: 0, favorites: 0, topDownloads: [], topFavorites: [] }
+    const orm = drizzle(this.db as unknown as D1Database)
+    const downloadWhere = projectSlugs?.length ? inArray(downloadEventsTable.projectSlug, projectSlugs) : undefined
+    const favoriteWhere = projectSlugs?.length ? inArray(projectFavoritesTable.projectSlug, projectSlugs) : undefined
+    const downloads = await orm.select({ value: count() }).from(downloadEventsTable).where(downloadWhere).get()
+    const favorites = await orm.select({ value: count() }).from(projectFavoritesTable).where(favoriteWhere).get()
+    const topDownloads = await orm.select({ projectSlug: downloadEventsTable.projectSlug, value: count() }).from(downloadEventsTable).where(downloadWhere).groupBy(downloadEventsTable.projectSlug).orderBy(desc(count())).limit(5).all()
+    const topFavorites = await orm.select({ projectSlug: projectFavoritesTable.projectSlug, value: count() }).from(projectFavoritesTable).where(favoriteWhere).groupBy(projectFavoritesTable.projectSlug).orderBy(desc(count())).limit(5).all()
+    return { downloads: Number(downloads?.value ?? 0), favorites: Number(favorites?.value ?? 0), topDownloads: topDownloads.map((item) => ({ projectSlug: item.projectSlug, count: Number(item.value) })), topFavorites: topFavorites.map((item) => ({ projectSlug: item.projectSlug, count: Number(item.value) })) }
   }
   async getAppSetting(key: string) {
     try {
-      const row = await this.db.prepare('SELECT value FROM app_meta WHERE key = ?').bind(key).first<{ value: string }>()
+      const row = await drizzle(this.db as unknown as D1Database).select({ value: appMetaTable.value }).from(appMetaTable).where(eq(appMetaTable.key, key)).get()
       return row?.value ?? null
     } catch { return null }
   }
   async setAppSetting(key: string, value: string) {
-    await this.db.prepare('INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at').bind(key, value, new Date().toISOString()).run()
+    await drizzle(this.db as unknown as D1Database).insert(appMetaTable).values({ key, value, updatedAt: new Date().toISOString() }).onConflictDoUpdate({ target: appMetaTable.key, set: { value, updatedAt: new Date().toISOString() } }).run()
   }
-  async createYggSession(session: YggSessionRecord) { await this.db.prepare('INSERT INTO ygg_sessions (id, account_id, profile_id, server_id, ip, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(session.id, session.accountId, session.profileId, session.serverId, session.ip, session.createdAt, session.expiresAt).run() }
-  async hasYggSession(profileId: string, serverId: string) { await this.db.prepare('DELETE FROM ygg_sessions WHERE expires_at <= ?').bind(new Date().toISOString()).run(); const row = await this.db.prepare('SELECT id FROM ygg_sessions WHERE profile_id = ? AND server_id = ? AND expires_at > ? LIMIT 1').bind(profileId, serverId, new Date().toISOString()).first<{ id: string }>(); return Boolean(row) }
-  async revokeYggToken(tokenHash: string, accountId: string | null, revokedAt: string, expiresAt: string | null) { await this.db.prepare('INSERT INTO ygg_revoked_tokens (token_hash, account_id, revoked_at, expires_at) VALUES (?, ?, ?, ?) ON CONFLICT(token_hash) DO NOTHING').bind(tokenHash, accountId, revokedAt, expiresAt).run() }
-  async isYggTokenRevoked(tokenHash: string) { const row = await this.db.prepare('SELECT token_hash FROM ygg_revoked_tokens WHERE token_hash = ? AND (expires_at IS NULL OR expires_at > ?)').bind(tokenHash, new Date().toISOString()).first<{ token_hash: string }>(); return Boolean(row) }
-  async saveMojangToken(accountId: string, ciphertext: string, updatedAt: string, expiresAt: string | null) { await this.db.prepare('INSERT INTO mojang_oauth_tokens (account_id, refresh_token_ciphertext, created_at, updated_at, expires_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(account_id) DO UPDATE SET refresh_token_ciphertext = excluded.refresh_token_ciphertext, updated_at = excluded.updated_at, expires_at = excluded.expires_at').bind(accountId, ciphertext, updatedAt, updatedAt, expiresAt).run() }
+  async createYggSession(session: YggSessionRecord) { await drizzle(this.db as unknown as D1Database).insert(yggSessionsTable).values({ id: session.id, accountId: session.accountId, profileId: session.profileId, serverId: session.serverId, ip: session.ip, createdAt: session.createdAt, expiresAt: session.expiresAt }).run() }
+  async hasYggSession(profileId: string, serverId: string) { const now = new Date().toISOString(); const orm = drizzle(this.db as unknown as D1Database); await orm.delete(yggSessionsTable).where(lte(yggSessionsTable.expiresAt, now)).run(); const row = await orm.select({ id: yggSessionsTable.id }).from(yggSessionsTable).where(and(eq(yggSessionsTable.profileId, profileId), eq(yggSessionsTable.serverId, serverId), gt(yggSessionsTable.expiresAt, now))).limit(1).get(); return Boolean(row) }
+  async revokeYggToken(tokenHash: string, accountId: string | null, revokedAt: string, expiresAt: string | null) { await drizzle(this.db as unknown as D1Database).insert(yggRevokedTokensTable).values({ tokenHash, accountId, revokedAt, expiresAt }).onConflictDoNothing().run() }
+  async isYggTokenRevoked(tokenHash: string) { const now = new Date().toISOString(); const row = await drizzle(this.db as unknown as D1Database).select({ tokenHash: yggRevokedTokensTable.tokenHash }).from(yggRevokedTokensTable).where(and(eq(yggRevokedTokensTable.tokenHash, tokenHash), or(isNull(yggRevokedTokensTable.expiresAt), gt(yggRevokedTokensTable.expiresAt, now)))).get(); return Boolean(row) }
+  async saveMojangToken(accountId: string, ciphertext: string, updatedAt: string, expiresAt: string | null) { await drizzle(this.db as unknown as D1Database).insert(mojangOauthTokensTable).values({ accountId, refreshTokenCiphertext: ciphertext, createdAt: updatedAt, updatedAt, expiresAt }).onConflictDoUpdate({ target: mojangOauthTokensTable.accountId, set: { refreshTokenCiphertext: ciphertext, updatedAt, expiresAt } }).run() }
+  async createPublishUpload(upload: PublishUploadRecord) { await drizzle(this.db as unknown as D1Database).insert(publishUploadsTable).values({ id: upload.id, projectSlug: upload.projectSlug, accountId: upload.accountId, filename: upload.filename, size: upload.size, sha256: upload.sha256, contentType: upload.contentType, storageKey: upload.storageKey, multipartId: upload.multipartId, status: upload.status, createdAt: upload.createdAt, expiresAt: upload.expiresAt }).run() }
+  async getPublishUpload(id: string, accountId: string) { return (await drizzle(this.db as unknown as D1Database).select().from(publishUploadsTable).where(and(eq(publishUploadsTable.id, id), eq(publishUploadsTable.accountId, accountId))).get() as PublishUploadRecord | undefined) ?? null }
+  async getCompletedPublishUpload(id: string, accountId: string, projectSlug: string) { return (await drizzle(this.db as unknown as D1Database).select().from(publishUploadsTable).where(and(eq(publishUploadsTable.id, id), eq(publishUploadsTable.accountId, accountId), eq(publishUploadsTable.projectSlug, projectSlug), eq(publishUploadsTable.status, 'complete'))).get() as PublishUploadRecord | undefined) ?? null }
+  async completePublishUpload(id: string) { await drizzle(this.db as unknown as D1Database).update(publishUploadsTable).set({ status: 'complete' }).where(eq(publishUploadsTable.id, id)).run() }
 
   async findAccountByEmail(email: string) {
     const account = await drizzle(this.db as unknown as D1Database).select().from(accountsTable).where(eq(accountsTable.email, email)).get() as any

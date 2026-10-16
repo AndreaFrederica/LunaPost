@@ -1049,40 +1049,40 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const storage = getStorage(c); if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: '文件存储未配置' } }, 503)
     const id = crypto.randomUUID(); const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); const contentType = body.contentType || 'application/octet-stream'; const key = `publish/${projectSlug}/${id}/${body.filename}`
     const multipartId = Number(body.size) > 100 * 1024 * 1024 && storage.createMultipart ? await storage.createMultipart(key, contentType, body.filename) : null
-    await c.env.DB?.prepare('INSERT INTO publish_uploads (id, project_slug, account_id, filename, size, sha256, content_type, storage_key, multipart_id, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(id, projectSlug, auth.account!.id, body.filename, Number(body.size), body.sha256 ?? null, contentType, key, multipartId, 'created', new Date().toISOString(), expiresAt).run()
+    await getAuthStore(c).createPublishUpload({ id, projectSlug, accountId: auth.account!.id, filename: body.filename, size: Number(body.size), sha256: body.sha256 ?? null, contentType, storageKey: key, multipartId, status: 'created', createdAt: new Date().toISOString(), expiresAt })
     const origin = new URL(c.env?.PUBLIC_BASE_URL || c.req.url).origin
     return c.json({ uploadId: id, uploadUrl: new URL(`/api/v1/publish/uploads/${id}`, origin).href, method: 'PUT', expiresAt, partSize: multipartId ? 8 * 1024 * 1024 : null, completeUrl: multipartId ? new URL(`/api/v1/publish/uploads/${id}/complete`, origin).href : null }, 201)
   })
 
   app.put('/api/v1/publish/uploads/:id', async (c) => {
     const auth = await requireScope(c, 'release:write'); if (auth.error) return auth.error
-    const row = await c.env.DB?.prepare('SELECT * FROM publish_uploads WHERE id = ? AND account_id = ?').bind(c.req.param('id'), auth.account!.id).first<any>()
-    if (!row || row.status !== 'created' || Date.parse(row.expires_at) < Date.now()) return c.json({ error: { code: 'UPLOAD_EXPIRED', message: '上传会话不存在或已过期' } }, 404)
+    const row = await getAuthStore(c).getPublishUpload(c.req.param('id'), auth.account!.id)
+    if (!row || row.status !== 'created' || Date.parse(row.expiresAt) < Date.now()) return c.json({ error: { code: 'UPLOAD_EXPIRED', message: '上传会话不存在或已过期' } }, 404)
     const storage = getStorage(c); if (!storage) return c.json({ error: { code: 'STORAGE_UNAVAILABLE', message: '文件存储未配置' } }, 503)
     const data = await c.req.arrayBuffer(); if (data.byteLength !== Number(row.size)) return c.json({ error: { code: 'SIZE_MISMATCH', message: '文件大小不匹配' } }, 422)
-    if (row.multipart_id) return c.json({ error: { code: 'MULTIPART_REQUIRED', message: '此会话需要分片上传' } }, 409)
-    await storage.put(row.storage_key, data, row.content_type, row.filename)
-    await c.env.DB?.prepare('UPDATE publish_uploads SET status = ? WHERE id = ?').bind('complete', row.id).run()
-    return c.json({ uploadId: row.id, status: 'complete', storageKey: row.storage_key })
+    if (row.multipartId) return c.json({ error: { code: 'MULTIPART_REQUIRED', message: '此会话需要分片上传' } }, 409)
+    await storage.put(row.storageKey!, data, row.contentType, row.filename)
+    await getAuthStore(c).completePublishUpload(row.id)
+    return c.json({ uploadId: row.id, status: 'complete', storageKey: row.storageKey })
   })
 
   app.put('/api/v1/publish/uploads/:id/parts/:part', async (c) => {
     const auth = await requireScope(c, 'release:write'); if (auth.error) return auth.error
-    const row = await c.env.DB?.prepare('SELECT * FROM publish_uploads WHERE id = ? AND account_id = ?').bind(c.req.param('id'), auth.account!.id).first<any>()
+    const row = await getAuthStore(c).getPublishUpload(c.req.param('id'), auth.account!.id)
     const storage = getStorage(c); const part = Number(c.req.param('part'))
-    if (!row || row.status !== 'created' || !row.multipart_id || !storage?.uploadPart || !Number.isInteger(part) || part < 1 || part > 10000) return c.json({ error: { code: 'INVALID_PART', message: '分片上传会话或分片编号无效' } }, 400)
-    const etag = await storage.uploadPart(row.storage_key, row.multipart_id, part, await c.req.arrayBuffer())
+    if (!row || row.status !== 'created' || !row.multipartId || !storage?.uploadPart || !Number.isInteger(part) || part < 1 || part > 10000) return c.json({ error: { code: 'INVALID_PART', message: '分片上传会话或分片编号无效' } }, 400)
+    const etag = await storage.uploadPart(row.storageKey!, row.multipartId, part, await c.req.arrayBuffer())
     return c.json({ part, etag })
   })
 
   app.post('/api/v1/publish/uploads/:id/complete', async (c) => {
     const auth = await requireScope(c, 'release:write'); if (auth.error) return auth.error
-    const row = await c.env.DB?.prepare('SELECT * FROM publish_uploads WHERE id = ? AND account_id = ?').bind(c.req.param('id'), auth.account!.id).first<any>()
+    const row = await getAuthStore(c).getPublishUpload(c.req.param('id'), auth.account!.id)
     const storage = getStorage(c); const body = await c.req.json().catch(() => null) as { parts?: Array<{ partNumber?: number; etag?: string }> } | null
-    if (!row || row.status !== 'created' || !row.multipart_id || !storage?.completeMultipart || !body?.parts?.length) return c.json({ error: { code: 'INVALID_MULTIPART', message: '分片上传会话或分片列表无效' } }, 400)
-    await storage.completeMultipart(row.storage_key, row.multipart_id, body.parts.map((part) => ({ partNumber: Number(part.partNumber), etag: String(part.etag) })))
-    await c.env.DB?.prepare('UPDATE publish_uploads SET status = ? WHERE id = ?').bind('complete', row.id).run()
-    return c.json({ uploadId: row.id, status: 'complete', storageKey: row.storage_key })
+    if (!row || row.status !== 'created' || !row.multipartId || !storage?.completeMultipart || !body?.parts?.length) return c.json({ error: { code: 'INVALID_MULTIPART', message: '分片上传会话或分片列表无效' } }, 400)
+    await storage.completeMultipart(row.storageKey!, row.multipartId, body.parts.map((part) => ({ partNumber: Number(part.partNumber), etag: String(part.etag) })))
+    await getAuthStore(c).completePublishUpload(row.id)
+    return c.json({ uploadId: row.id, status: 'complete', storageKey: row.storageKey })
   })
 
   app.post('/api/v1/projects/:slug/publish', async (c) => {
@@ -1097,10 +1097,10 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const body = await c.req.json().catch(() => null) as { version?: any; replace?: boolean } | null
     const rawVersion = body?.version && typeof body.version === 'object' ? { ...body.version, files: Array.isArray(body.version.files) ? await Promise.all(body.version.files.map(async (raw: any) => {
       if (!raw?.uploadId) return raw
-      const upload = await c.env.DB?.prepare('SELECT * FROM publish_uploads WHERE id = ? AND account_id = ? AND project_slug = ? AND status = ?').bind(raw.uploadId, auth.account!.id, current.slug, 'complete').first<any>()
+      const upload = await getAuthStore(c).getCompletedPublishUpload(raw.uploadId, auth.account!.id, current.slug)
       if (!upload) return { ...raw, sources: [] }
       const origin = new URL(c.env?.PUBLIC_BASE_URL || c.req.url).origin
-      const managed = { id: `managed-${upload.id}`, kind: 'managed', region: 'GLOBAL', url: new URL(`/api/v1/storage/${upload.storage_key}`, origin).href, priority: 50 }
+      const managed = { id: `managed-${upload.id}`, kind: 'managed', region: 'GLOBAL', url: new URL(`/api/v1/storage/${upload.storageKey}`, origin).href, priority: 50 }
       return { ...raw, id: raw.id || `publish-${upload.id}`, name: raw.filename || upload.filename, size: Number(upload.size), sources: [...(Array.isArray(raw.sources) ? raw.sources : []), managed] }
     })) : [] } : body?.version
     const parsed = versionSchema.safeParse(rawVersion)
