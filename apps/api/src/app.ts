@@ -72,7 +72,7 @@ const defaultSiteSettings: SiteSettings = {
   ygg: { enabled: true, allowLocalAccounts: true, accessTokenTtlSeconds: 3600, refreshTokenTtlSeconds: 2592000, upstreams: [] },
   mojang: { enabled: false, clientId: '', tenant: 'consumers' },
   githubActions: { sharedEnabled: false, proxyEnabled: false, ttlSeconds: 300, apiKey: '' },
-  storage: { provider: 'r2', endpoint: '', region: '', bucket: '', accessKeyId: '', secretAccessKey: '', publicBaseUrl: '', pathPrefix: '', syncMode: 'manual', providers: [{ id: 'primary', name: 'Primary', provider: 'r2', enabled: true, primary: true, priority: 100, endpoint: '', region: '', bucket: '', accessKeyId: '', secretAccessKey: '', publicBaseUrl: '', pathPrefix: '' }] },
+  storage: { provider: 'r2', endpoint: '', region: '', bucket: '', accessKeyId: '', secretAccessKey: '', publicBaseUrl: '', pathPrefix: '', syncMode: 'manual', directUpload: { enabled: true, roles: ['admin', 'root'], ttlSeconds: 300 }, providers: [{ id: 'primary', name: 'Primary', provider: 'r2', enabled: true, primary: true, priority: 100, endpoint: '', region: '', bucket: '', accessKeyId: '', secretAccessKey: '', publicBaseUrl: '', pathPrefix: '' }] },
 }
 
 const normalizeStorageProvider = (raw: any, fallback: any, index: number): StorageProviderConfig => ({
@@ -97,7 +97,9 @@ const normalizeStorageSettings = (raw: any): SiteSettings['storage'] => {
   const primary = configured.find((item: StorageProviderConfig) => item.primary !== false && item.enabled !== false) ?? configured.find((item: StorageProviderConfig) => item.enabled !== false) ?? configured[0]
   const providers = configured.map((item: StorageProviderConfig, index: number) => ({ ...item, primary: item.id === primary.id || (index === 0 && !configured.some((candidate: StorageProviderConfig) => candidate.primary)) }))
   const selected = providers.find((item: StorageProviderConfig & { primary: boolean }) => item.primary) ?? providers[0]
-  return { ...selected, syncMode: raw?.syncMode === 'automatic' ? 'automatic' : 'manual', providers }
+  const directUpload = raw?.directUpload && typeof raw.directUpload === 'object' ? raw.directUpload : {}
+  const validRoles = Array.isArray(directUpload.roles) ? directUpload.roles.filter((role: unknown): role is 'user' | 'developer' | 'admin' | 'root' => ['user', 'developer', 'admin', 'root'].includes(String(role))) : ['admin', 'root']
+  return { ...selected, syncMode: raw?.syncMode === 'automatic' ? 'automatic' : 'manual', directUpload: { enabled: directUpload.enabled === undefined ? true : directUpload.enabled === true, roles: validRoles, ttlSeconds: Number.isFinite(Number(directUpload.ttlSeconds)) ? Math.max(60, Math.min(900, Number(directUpload.ttlSeconds))) : 300 }, providers }
 }
 
 const randomApiKey = () => {
@@ -848,7 +850,10 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const primaryStorage = storageProviders.find((item) => item.primary) ?? storageProviders.find((item) => item.enabled !== false)
     storageProviders.forEach((item) => { item.primary = item.id === primaryStorage?.id })
     for (const item of storageProviders) if (item.provider === 'tencent_cos' && item.enabled !== false && (!item.region || !item.bucket || !item.accessKeyId || !item.secretAccessKey)) return c.json({ error: { code: 'INVALID_SETTINGS', message: 'Tencent COS requires region, bucket, access key and secret key' } }, 400)
-    const storageSettings = { ...primaryStorage!, syncMode: storage.syncMode === 'automatic' ? 'automatic' as const : current.storage.syncMode, providers: storageProviders }
+    const directUpload = storage.directUpload ?? current.storage.directUpload
+    const directRoles = Array.isArray(directUpload?.roles) ? directUpload.roles.filter((role: unknown): role is 'user' | 'developer' | 'admin' | 'root' => ['user', 'developer', 'admin', 'root'].includes(String(role))) : current.storage.directUpload.roles
+    if (typeof directUpload?.enabled !== 'boolean' || !directRoles.length || !Number.isInteger(Number(directUpload.ttlSeconds)) || Number(directUpload.ttlSeconds) < 60 || Number(directUpload.ttlSeconds) > 900) return c.json({ error: { code: 'INVALID_SETTINGS', message: 'Invalid direct upload settings' } }, 400)
+    const storageSettings = { ...primaryStorage!, syncMode: storage.syncMode === 'automatic' ? 'automatic' as const : current.storage.syncMode, directUpload: { enabled: directUpload.enabled, roles: directRoles, ttlSeconds: Number(directUpload.ttlSeconds) }, providers: storageProviders }
     const yggAccessTtl = administrator.role === 'root' ? Number(ygg.accessTokenTtlSeconds) : current.ygg.accessTokenTtlSeconds
     const yggRefreshTtl = administrator.role === 'root' ? Number(ygg.refreshTokenTtlSeconds) : current.ygg.refreshTokenTtlSeconds
     if (!Number.isInteger(yggAccessTtl) || yggAccessTtl < 300 || yggAccessTtl > 86400 || !Number.isInteger(yggRefreshTtl) || yggRefreshTtl < 3600 || yggRefreshTtl > 31536000 || yggRefreshTtl <= yggAccessTtl) return c.json({ error: { code: 'INVALID_SETTINGS', message: apiT(c.req.header('accept-language'), 'apiErrors.invalidYggTokenLifetime') } }, 400)
@@ -1186,6 +1191,53 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     c.header('Cache-Control', 'public, max-age=31536000, immutable')
     if (object.filename) c.header('Content-Disposition', `inline; filename="${object.filename.replaceAll('"', '')}"`)
     return c.body(object.body as any)
+  })
+
+  app.post('/api/v1/storage/direct-uploads', async (c) => {
+    const account = await getCurrentAccount(c)
+    if (!account) return c.json({ error: { code: 'UNAUTHORIZED', message: apiT(c.req.header('accept-language'), 'apiErrors.unauthorized') } }, 401)
+    const settings = await getSiteSettings(c)
+    if (!settings.storage.directUpload.enabled || !settings.storage.directUpload.roles.includes(account.role)) return c.json({ error: { code: 'DIRECT_UPLOAD_UNAVAILABLE', message: 'Direct uploads are not enabled for this account' } }, 403)
+    const storage = await getStorage(c)
+    if (!storage?.createUploadUrl) return c.json({ error: { code: 'DIRECT_UPLOAD_UNAVAILABLE', message: 'The configured storage does not support direct uploads' } }, 409)
+    const body = await c.req.json().catch(() => null) as { filename?: string; size?: number; contentType?: string; purpose?: string; projectSlug?: string } | null
+    const purpose = body?.purpose === 'project-file' ? 'project-file' : 'account'
+    const filename = String(body?.filename || '').trim().slice(0, 255)
+    const size = Number(body?.size)
+    if (!filename || !Number.isSafeInteger(size) || size < 0 || size > Math.min(512 * 1024 * 1024, settings.moderation.automatic.maxFileSize)) return c.json({ error: { code: 'FILE_TOO_LARGE', message: apiT(c.req.header('accept-language'), 'apiErrors.fileTooLarge') } }, 413)
+    let projectSlug: string | null = null
+    if (purpose === 'project-file') {
+      projectSlug = String(body?.projectSlug || '').trim()
+      const project = (await getCatalogFor(c)).projects.find((item) => item.slug === projectSlug)
+      if (!project) return c.json({ error: { code: 'NOT_FOUND', message: 'Project not found' } }, 404)
+      if (!await canManageProject(c, project)) return c.json({ error: { code: 'FORBIDDEN', message: apiT(c.req.header('accept-language'), 'apiErrors.fileUploadForbidden') } }, 403)
+    }
+    const id = crypto.randomUUID()
+    const expiresAt = new Date(Date.now() + settings.storage.directUpload.ttlSeconds * 1000).toISOString()
+    const contentType = String(body?.contentType || 'application/octet-stream').slice(0, 200)
+    const storageKey = `direct/${id}`
+    let uploadUrl: string
+    try { uploadUrl = await storage.createUploadUrl(storageKey, contentType, filename, settings.storage.directUpload.ttlSeconds) } catch { return c.json({ error: { code: 'DIRECT_UPLOAD_UNAVAILABLE', message: 'The configured storage does not support direct uploads' } }, 409) }
+    await getAuthStore(c).setAppSetting(`direct_upload:${id}`, JSON.stringify({ id, accountId: account.id, filename, size, contentType, purpose, projectSlug, storageKey, expiresAt }))
+    const origin = new URL(c.env?.PUBLIC_BASE_URL || c.req.url).origin
+    return c.json({ uploadId: id, uploadUrl, method: 'PUT', expiresAt, completeUrl: new URL(`/api/v1/storage/direct-uploads/${id}/complete`, origin).href }, 201)
+  })
+
+  app.post('/api/v1/storage/direct-uploads/:id/complete', async (c) => {
+    const account = await getCurrentAccount(c)
+    if (!account) return c.json({ error: { code: 'UNAUTHORIZED', message: apiT(c.req.header('accept-language'), 'apiErrors.unauthorized') } }, 401)
+    const settings = await getSiteSettings(c)
+    if (!settings.storage.directUpload.enabled || !settings.storage.directUpload.roles.includes(account.role)) return c.json({ error: { code: 'DIRECT_UPLOAD_UNAVAILABLE', message: 'Direct uploads are not enabled for this account' } }, 403)
+    const raw = await getAuthStore(c).getAppSetting(`direct_upload:${c.req.param('id')}`)
+    type DirectUploadSession = { id: string; accountId: string; filename: string; size: number; contentType: string; purpose: 'account' | 'project-file'; projectSlug: string | null; storageKey: string; expiresAt: string }
+    let session: DirectUploadSession | null = null
+    try { session = raw ? JSON.parse(raw) as DirectUploadSession : null } catch { session = null }
+    if (!session || session.accountId !== account.id || Date.parse(session.expiresAt) < Date.now()) return c.json({ error: { code: 'UPLOAD_EXPIRED', message: 'Direct upload session is missing or expired' } }, 404)
+    const storage = await getStorage(c)
+    if (!storage?.head || !await storage.head(session.storageKey)) return c.json({ error: { code: 'UPLOAD_INCOMPLETE', message: 'The object was not uploaded to storage' } }, 422)
+    const url = await storageObjectUrl(c, session.storageKey)
+    if (session.purpose === 'project-file') return c.json({ id: session.storageKey, name: session.filename, size: session.size, source: { id: `managed-${session.storageKey}`, kind: 'managed', region: 'GLOBAL', url, priority: 100 } })
+    return c.json({ id: session.storageKey, url, name: session.filename, size: session.size })
   })
 
   app.post('/api/v1/account/uploads', async (c) => {

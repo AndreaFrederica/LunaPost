@@ -7,6 +7,7 @@ export interface StorageAdapter {
   get(id: string): Promise<StoredObject | null>
   head?(id: string): Promise<boolean>
   getRedirectUrl?(id: string, expiresInSeconds?: number): Promise<string>
+  createUploadUrl?(id: string, contentType?: string, filename?: string, expiresInSeconds?: number): Promise<string>
   createMultipart?(id: string, contentType: string, filename?: string): Promise<string>
   uploadPart?(id: string, uploadId: string, partNumber: number, body: ArrayBuffer): Promise<string>
   completeMultipart?(id: string, uploadId: string, parts: MultipartPart[]): Promise<void>
@@ -68,6 +69,10 @@ export class StoragePool implements StorageAdapter {
     }
     return null
   }
+  async head(id: string) {
+    if (!this.primary.head) return false
+    return this.primary.head(id)
+  }
   async getRedirectUrl(id: string, expiresInSeconds?: number) {
     for (const item of this.providers) {
       if (!item.adapter.getRedirectUrl) continue
@@ -77,6 +82,10 @@ export class StoragePool implements StorageAdapter {
       } catch { /* try the next mirror */ }
     }
     throw new Error('No storage provider can create a download URL')
+  }
+  async createUploadUrl(id: string, contentType?: string, filename?: string, expiresInSeconds?: number) {
+    if (!this.primary.createUploadUrl) throw new Error('Primary storage does not support direct uploads')
+    return this.primary.createUploadUrl(id, contentType, filename, expiresInSeconds)
   }
   async createMultipart(id: string, contentType: string, filename?: string) {
     if (!this.primary.createMultipart) throw new Error('Primary storage does not support multipart uploads')
@@ -149,6 +158,13 @@ export class TencentCosStorage implements StorageAdapter {
   async getRedirectUrl(id: string, expiresInSeconds = 300) {
     const now = Math.floor(Date.now() / 1000); const start = now - 60; const end = now + Math.max(60, Math.min(900, expiresInSeconds)); const keyTime = `${start};${end}`
     const uri = this.uri(this.key(id)); const httpString = `get\n${uri}\n\n\n`; const signKey = await hmacSha1(this.config.secretAccessKey, keyTime); const stringToSign = `sha1\n${keyTime}\n${await hmacSha1('', httpString)}\n`; const signature = await hmacSha1(signKey, stringToSign)
+    const url = new URL(`${this.baseUrl}${uri}`)
+    url.searchParams.set('q-sign-algorithm', 'sha1'); url.searchParams.set('q-ak', this.config.accessKeyId); url.searchParams.set('q-sign-time', keyTime); url.searchParams.set('q-key-time', keyTime); url.searchParams.set('q-header-list', ''); url.searchParams.set('q-url-param-list', ''); url.searchParams.set('q-signature', signature)
+    return url.href
+  }
+  async createUploadUrl(id: string, _contentType = 'application/octet-stream', _filename?: string, expiresInSeconds = 300) {
+    const now = Math.floor(Date.now() / 1000); const start = now - 60; const end = now + Math.max(60, Math.min(900, expiresInSeconds)); const keyTime = `${start};${end}`
+    const uri = this.uri(this.key(id)); const httpString = `put\n${uri}\n\n\n`; const signKey = await hmacSha1(this.config.secretAccessKey, keyTime); const stringToSign = `sha1\n${keyTime}\n${await hmacSha1('', httpString)}\n`; const signature = await hmacSha1(signKey, stringToSign)
     const url = new URL(`${this.baseUrl}${uri}`)
     url.searchParams.set('q-sign-algorithm', 'sha1'); url.searchParams.set('q-ak', this.config.accessKeyId); url.searchParams.set('q-sign-time', keyTime); url.searchParams.set('q-key-time', keyTime); url.searchParams.set('q-header-list', ''); url.searchParams.set('q-url-param-list', ''); url.searchParams.set('q-signature', signature)
     return url.href

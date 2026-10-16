@@ -248,9 +248,16 @@ export type StorageProviderSettings = {
   pathPrefix: string
 }
 export type StorageSyncMode = 'manual' | 'automatic'
+export type StorageDirectUploadRole = 'user' | 'developer' | 'admin' | 'root'
+export type StorageDirectUploadSettings = {
+  enabled: boolean
+  roles: StorageDirectUploadRole[]
+  ttlSeconds: number
+}
 export type StorageSettings = StorageProviderSettings & {
   syncMode: StorageSyncMode
   providers: StorageProviderSettings[]
+  directUpload: StorageDirectUploadSettings
 }
 export type SiteSettings = {
   appearance: {
