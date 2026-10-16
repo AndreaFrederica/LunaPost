@@ -176,7 +176,7 @@ const base64UrlEncode = (value: string) => toBase64Url(encoder.encode(value))
 const base64UrlDecode = (value: string) => decoder.decode(fromBase64Url(value))
 const jwtKey = async (secret: string) => crypto.subtle.importKey('raw', encoder.encode(secret || defaultJwtSecret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify'])
 
-export const createJwt = async (payload: { sub: string; email: string; role: AccountRole }, secret?: string, ttlSeconds = 900) => {
+export const createJwt = async (payload: { sub: string; email: string; role: AccountRole } & Record<string, unknown>, secret?: string, ttlSeconds = 900) => {
   const now = Math.floor(Date.now() / 1000)
   const header = base64UrlEncode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
   const body = base64UrlEncode(JSON.stringify({ ...payload, iat: now, exp: now + ttlSeconds }))
@@ -192,7 +192,7 @@ export const verifyJwt = async (token: string | undefined, secret?: string) => {
   const unsigned = `${parts[0]}.${parts[1]}`
   if (!await crypto.subtle.verify('HMAC', await jwtKey(secret ?? defaultJwtSecret), fromBase64Url(parts[2]), encoder.encode(unsigned))) return null
   try {
-    const payload = JSON.parse(base64UrlDecode(parts[1])) as { sub?: string; email?: string; role?: AccountRole; exp?: number }
+    const payload = JSON.parse(base64UrlDecode(parts[1])) as { sub?: string; email?: string; role?: AccountRole; exp?: number } & Record<string, unknown>
     if (!payload.sub || !payload.email || !payload.role || !payload.exp || payload.exp <= Math.floor(Date.now() / 1000)) return null
     return payload
   } catch {

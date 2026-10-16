@@ -240,7 +240,15 @@ GET /api/v1/projects/:slug/download?game_version=1.21.1&loader=fabric
 ## Minecraft 身份
 
 - **Mojang / Microsoft 绑定**：账户页通过设备码流程登录 Microsoft，同步 `minecraftUuid`、皮肤与披风；需要在站点设置中启用并配置 Microsoft Client ID。
-- **Yggdrasil 认证代理**：可选开启，提供 `/api/ygg/authserver/*`、`/api/ygg/sessionserver/*` 与档案查询接口，支持站内账户登录、上游聚合（按 `priority` 依次尝试）、令牌吊销与皮肤属性签名。相关设置在后台「Yggdrasil 认证」分区，数据表由 `migrations/0009_ygg.sql` 创建。
+- **Yggdrasil 认证代理**：可选开启，提供 `/api/ygg/authserver/*`、`/api/ygg/sessionserver/*` 与档案查询接口，支持站内账户登录、上游聚合（按 `priority` 依次尝试）、令牌吊销与皮肤属性签名。认证请求会先匹配站内账户，失败后按优先级转发到正版兼容的 Yggdrasil/LittleSkin 上游；上游令牌会被包装成本站短期令牌，`join`、`validate`、`invalidate`、`hasJoined` 和档案请求会继续透明转发，因此同一 MC 服务端可以融合多种账户来源。相关设置在后台「Yggdrasil 认证」分区，数据表由 `migrations/0009_ygg.sql` 创建。
+
+MC 服务端使用本站的融合验证时，把 `GET /api/ygg/meta` 的地址交给 authlib-injector；也可以读取 `GET /api/ygg/server-config` 获取完整配置。例如：
+
+```text
+java -javaagent:authlib-injector.jar=https://example.com/api/ygg/meta -jar server.jar
+```
+
+服务端仍应设置 `online-mode=true`，由 authlib-injector 接管认证。`/api/ygg/server-config` 会返回 metadata 地址、Java Agent 参数、服务端属性和当前启用的上游列表。后台上游的 `baseUrl` 应指向 Yggdrasil 服务根地址；需要拆分路由时可分别填写 `authBaseUrl`、`sessionBaseUrl`、`profileBaseUrl`、`nameLookupBaseUrl`。上游不可用时会继续尝试下一项，全部失败才返回认证失败。
 
 ## 内容审核与站点设置
 

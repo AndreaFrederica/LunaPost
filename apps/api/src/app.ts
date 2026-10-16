@@ -341,7 +341,11 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
           ...(value.ygg ?? {}),
           accessTokenTtlSeconds: Number.isFinite(Number(value.ygg?.accessTokenTtlSeconds)) ? Math.max(300, Math.min(86400, Number(value.ygg?.accessTokenTtlSeconds))) : defaultSiteSettings.ygg.accessTokenTtlSeconds,
           refreshTokenTtlSeconds: Number.isFinite(Number(value.ygg?.refreshTokenTtlSeconds)) ? Math.max(3600, Math.min(31536000, Number(value.ygg?.refreshTokenTtlSeconds))) : defaultSiteSettings.ygg.refreshTokenTtlSeconds,
-          upstreams: Array.isArray(value.ygg?.upstreams) ? value.ygg.upstreams : [],
+          upstreams: Array.isArray(value.ygg?.upstreams) ? value.ygg.upstreams.map((item: any, index: number) => {
+            const baseUrl = String(item?.baseUrl || '').trim().replace(/\/+$/u, '')
+            const endpoint = (name: string) => { const value = String(item?.[name] || '').trim().replace(/\/+$/u, ''); return value || undefined }
+            return { id: String(item?.id || `upstream-${index + 1}`).slice(0, 120), name: String(item?.name || `Upstream ${index + 1}`).trim().slice(0, 120), baseUrl, authBaseUrl: endpoint('authBaseUrl') || baseUrl || undefined, sessionBaseUrl: endpoint('sessionBaseUrl') || baseUrl || undefined, profileBaseUrl: endpoint('profileBaseUrl') || endpoint('sessionBaseUrl') || baseUrl || undefined, nameLookupBaseUrl: endpoint('nameLookupBaseUrl') || baseUrl || undefined, enabled: item?.enabled !== false, priority: Number.isFinite(Number(item?.priority)) ? Number(item.priority) : 0 }
+          }) : [],
         },
         mojang: { ...defaultSiteSettings.mojang, ...(value.mojang ?? {}), tenant: ['consumers', 'common', 'organizations'].includes(value.mojang?.tenant ?? '') ? value.mojang?.tenant as 'consumers' | 'common' | 'organizations' : 'consumers' },
         githubActions: { sharedEnabled: value.githubActions?.sharedEnabled === true, proxyEnabled: value.githubActions?.proxyEnabled === true, ttlSeconds: Number.isFinite(Number(value.githubActions?.ttlSeconds)) ? Math.max(60, Math.min(86400, Number(value.githubActions?.ttlSeconds))) : defaultSiteSettings.githubActions.ttlSeconds, apiKey: typeof value.githubActions?.apiKey === 'string' ? value.githubActions.apiKey.trim().slice(0, 300) : '' },
@@ -828,7 +832,15 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     if (!['manual', 'reject'].includes(automatic.failMode) || !Number.isFinite(Number(automatic.maxFileSize)) || Number(automatic.maxFileSize) <= 0 || !Array.isArray(automatic.blockedExtensions)) return c.json({ error: { code: 'INVALID_SETTINGS', message: apiT(c.req.header('accept-language'), 'apiErrors.invalidAutomaticModeration') } }, 400)
     const ygg = body?.ygg ?? current.ygg
     if (typeof ygg.enabled !== 'boolean' || typeof ygg.allowLocalAccounts !== 'boolean' || !Array.isArray(ygg.upstreams)) return c.json({ error: { code: 'INVALID_SETTINGS', message: apiT(c.req.header('accept-language'), 'apiErrors.invalidYggSettings') } }, 400)
-    const upstreams = ygg.upstreams.map((item: any, index: number) => ({ id: String(item?.id || crypto.randomUUID()).slice(0, 120), name: String(item?.name || apiT(c.req.header('accept-language'), 'admin.upstreamName', { number: index + 1 })).trim().slice(0, 120), baseUrl: String(item?.baseUrl || '').trim().replace(/\/+$/u, ''), enabled: item?.enabled !== false, priority: Number.isFinite(Number(item?.priority)) ? Number(item.priority) : 0 })).filter((item: any) => item.baseUrl && /^https?:\/\//u.test(item.baseUrl)).slice(0, 20)
+    const upstreams = ygg.upstreams.map((item: any, index: number) => {
+      const endpoint = (name: string) => String(item?.[name] || '').trim().replace(/\/+$/u, '')
+      const baseUrl = endpoint('baseUrl')
+      const authBaseUrl = endpoint('authBaseUrl') || baseUrl
+      const sessionBaseUrl = endpoint('sessionBaseUrl') || baseUrl
+      const profileBaseUrl = endpoint('profileBaseUrl') || sessionBaseUrl
+      const nameLookupBaseUrl = endpoint('nameLookupBaseUrl') || baseUrl
+      return { id: String(item?.id || crypto.randomUUID()).slice(0, 120), name: String(item?.name || apiT(c.req.header('accept-language'), 'admin.upstreamName', { number: index + 1 })).trim().slice(0, 120), baseUrl, authBaseUrl, sessionBaseUrl, profileBaseUrl, nameLookupBaseUrl, enabled: item?.enabled !== false, priority: Number.isFinite(Number(item?.priority)) ? Number(item.priority) : 0 }
+    }).filter((item: any) => [item.baseUrl, item.authBaseUrl, item.sessionBaseUrl, item.profileBaseUrl, item.nameLookupBaseUrl].some((value) => value && /^https?:\/\//u.test(value))).slice(0, 20)
     const mojang = body?.mojang ?? current.mojang
     if (!mojang || typeof mojang.enabled !== 'boolean' || typeof mojang.clientId !== 'string' || !['consumers', 'common', 'organizations'].includes(mojang.tenant ?? '')) return c.json({ error: { code: 'INVALID_SETTINGS', message: apiT(c.req.header('accept-language'), 'apiErrors.invalidMojangSettings') } }, 400)
     const githubActions = body?.githubActions ?? current.githubActions

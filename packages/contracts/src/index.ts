@@ -292,6 +292,10 @@ export type SiteSettings = {
       id: string
       name: string
       baseUrl: string
+      authBaseUrl?: string
+      sessionBaseUrl?: string
+      profileBaseUrl?: string
+      nameLookupBaseUrl?: string
       enabled: boolean
       priority: number
     }>
