@@ -1,4 +1,7 @@
 import type { AccountMetadata, Organization, Project } from '@andrea/contracts'
+import { drizzle } from 'drizzle-orm/d1'
+import { and, desc, eq, isNull } from 'drizzle-orm'
+import { apiKeys as apiKeysTable } from './db/schema.js'
 
 export type AccountRole = 'user' | 'developer' | 'admin' | 'root'
 
@@ -381,21 +384,21 @@ export class D1AccountStore implements AccountStore {
   }
 
   async listApiKeys(accountId: string) {
-    const result = await this.db.prepare('SELECT id, name, scopes, created_at as createdAt, revoked_at as revokedAt FROM api_keys WHERE account_id = ? ORDER BY created_at DESC').bind(accountId).all<{ id: string; name: string; scopes: string; createdAt: string; revokedAt: string | null }>()
-    return (result.results ?? []).map((key) => ({ ...key, scopes: JSON.parse(key.scopes) as string[] }))
+    const rows = await drizzle(this.db as unknown as D1Database).select({ id: apiKeysTable.id, name: apiKeysTable.name, scopes: apiKeysTable.scopes, createdAt: apiKeysTable.createdAt, revokedAt: apiKeysTable.revokedAt }).from(apiKeysTable).where(eq(apiKeysTable.accountId, accountId)).orderBy(desc(apiKeysTable.createdAt)).all()
+    return rows.map((key) => ({ ...key, scopes: JSON.parse(key.scopes) as string[] }))
   }
 
   async createApiKey(key: ApiKeyRecord) {
-    await this.db.prepare('INSERT INTO api_keys (id, account_id, key_hash, name, scopes, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(key.id, key.accountId, key.keyHash, key.name, JSON.stringify(key.scopes), key.createdAt, key.revokedAt).run()
+    await drizzle(this.db as unknown as D1Database).insert(apiKeysTable).values({ id: key.id, accountId: key.accountId, keyHash: key.keyHash, name: key.name, scopes: JSON.stringify(key.scopes), createdAt: key.createdAt, revokedAt: key.revokedAt }).run()
   }
 
   async findApiKey(keyHash: string) {
-    const row = await this.db.prepare('SELECT id, account_id as accountId, key_hash as keyHash, name, scopes, created_at as createdAt, revoked_at as revokedAt FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL').bind(keyHash).first<{ id: string; accountId: string; keyHash: string; name: string; scopes: string; createdAt: string; revokedAt: string | null }>()
+    const row = await drizzle(this.db as unknown as D1Database).select().from(apiKeysTable).where(and(eq(apiKeysTable.keyHash, keyHash), isNull(apiKeysTable.revokedAt))).get()
     return row ? { ...row, scopes: JSON.parse(row.scopes) as string[] } : null
   }
 
   async revokeApiKey(accountId: string, id: string) {
-    const result = await this.db.prepare('UPDATE api_keys SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL').bind(new Date().toISOString(), id, accountId).run() as { meta?: { changes?: number } }
+    const result = await drizzle(this.db as unknown as D1Database).update(apiKeysTable).set({ revokedAt: new Date().toISOString() }).where(and(eq(apiKeysTable.id, id), eq(apiKeysTable.accountId, accountId), isNull(apiKeysTable.revokedAt))).run()
     return Number(result.meta?.changes ?? 0) > 0
   }
 
