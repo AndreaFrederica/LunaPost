@@ -138,6 +138,8 @@ export class R2Storage implements StorageAdapter {
 }
 
 const hex = (bytes: ArrayBuffer) => Array.from(new Uint8Array(bytes), (value) => value.toString(16).padStart(2, '0')).join('')
+const sha1 = async (value: string) => hex(await crypto.subtle.digest('SHA-1', new TextEncoder().encode(value)))
+const cosEncode = (value: string) => encodeURIComponent(value).replace(/[!'()*]/g, (char) => '%' + char.charCodeAt(0).toString(16).toUpperCase())
 const hmacSha1 = async (secret: string, value: string) => {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
   return hex(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value)))
@@ -154,27 +156,27 @@ export class TencentCosStorage implements StorageAdapter {
     this.prefix = (config.pathPrefix || '').replace(/^\/+|\/+$/gu, '')
   }
   private key(id: string) { return [this.prefix, id.replace(/^\/+/, '')].filter(Boolean).join('/') }
-  private uri(key: string) { return `/${key.split('/').map((part) => encodeURIComponent(part)).join('/')}` }
+  private uri(key: string) { return `/${key.split('/').map((part) => cosEncode(part)).join('/')}` }
   async getRedirectUrl(id: string, expiresInSeconds = 300) {
     const now = Math.floor(Date.now() / 1000); const start = now - 60; const end = now + Math.max(60, Math.min(900, expiresInSeconds)); const keyTime = `${start};${end}`
-    const uri = this.uri(this.key(id)); const httpString = `get\n${uri}\n\n\n`; const signKey = await hmacSha1(this.config.secretAccessKey, keyTime); const stringToSign = `sha1\n${keyTime}\n${await hmacSha1('', httpString)}\n`; const signature = await hmacSha1(signKey, stringToSign)
+    const uri = this.uri(this.key(id)); const httpString = `get\n/${this.key(id)}\n\nhost=${cosEncode(this.host)}\n`; const signKey = await hmacSha1(this.config.secretAccessKey, keyTime); const stringToSign = `sha1\n${keyTime}\n${await sha1(httpString)}\n`; const signature = await hmacSha1(signKey, stringToSign)
     const url = new URL(`${this.baseUrl}${uri}`)
-    url.searchParams.set('q-sign-algorithm', 'sha1'); url.searchParams.set('q-ak', this.config.accessKeyId); url.searchParams.set('q-sign-time', keyTime); url.searchParams.set('q-key-time', keyTime); url.searchParams.set('q-header-list', ''); url.searchParams.set('q-url-param-list', ''); url.searchParams.set('q-signature', signature)
+    url.searchParams.set('q-sign-algorithm', 'sha1'); url.searchParams.set('q-ak', this.config.accessKeyId); url.searchParams.set('q-sign-time', keyTime); url.searchParams.set('q-key-time', keyTime); url.searchParams.set('q-header-list', 'host'); url.searchParams.set('q-url-param-list', ''); url.searchParams.set('q-signature', signature)
     return url.href
   }
   async createUploadUrl(id: string, _contentType = 'application/octet-stream', _filename?: string, expiresInSeconds = 300) {
     const now = Math.floor(Date.now() / 1000); const start = now - 60; const end = now + Math.max(60, Math.min(900, expiresInSeconds)); const keyTime = `${start};${end}`
-    const uri = this.uri(this.key(id)); const httpString = `put\n${uri}\n\n\n`; const signKey = await hmacSha1(this.config.secretAccessKey, keyTime); const stringToSign = `sha1\n${keyTime}\n${await hmacSha1('', httpString)}\n`; const signature = await hmacSha1(signKey, stringToSign)
+    const uri = this.uri(this.key(id)); const httpString = `put\n/${this.key(id)}\n\nhost=${cosEncode(this.host)}\n`; const signKey = await hmacSha1(this.config.secretAccessKey, keyTime); const stringToSign = `sha1\n${keyTime}\n${await sha1(httpString)}\n`; const signature = await hmacSha1(signKey, stringToSign)
     const url = new URL(`${this.baseUrl}${uri}`)
-    url.searchParams.set('q-sign-algorithm', 'sha1'); url.searchParams.set('q-ak', this.config.accessKeyId); url.searchParams.set('q-sign-time', keyTime); url.searchParams.set('q-key-time', keyTime); url.searchParams.set('q-header-list', ''); url.searchParams.set('q-url-param-list', ''); url.searchParams.set('q-signature', signature)
+    url.searchParams.set('q-sign-algorithm', 'sha1'); url.searchParams.set('q-ak', this.config.accessKeyId); url.searchParams.set('q-sign-time', keyTime); url.searchParams.set('q-key-time', keyTime); url.searchParams.set('q-header-list', 'host'); url.searchParams.set('q-url-param-list', ''); url.searchParams.set('q-signature', signature)
     return url.href
   }
   private async request(method: string, key: string, body?: ArrayBuffer | string, query: Record<string, string> = {}, contentType?: string) {
     const now = Math.floor(Date.now() / 1000); const start = now - 60; const end = now + 900; const keyTime = `${start};${end}`
-    const uri = this.uri(key); const params = Object.entries(query).sort(([a], [b]) => a.localeCompare(b)); const paramText = params.map(([name, value]) => `${encodeURIComponent(name).toLowerCase()}=${encodeURIComponent(value).toLowerCase()}`).join('&')
-    const headers = [['host', this.host], ...(contentType ? [['content-type', contentType] as [string, string]] : [])].sort(([a], [b]) => a.localeCompare(b)); const headerText = headers.map(([name, value]) => `${name}=${encodeURIComponent(value).toLowerCase()}`).join('&'); const headerList = headers.map(([name]) => name).join(';')
-    const httpString = `${method.toLowerCase()}\n${uri}\n${paramText}\n${headerText}\n`; const signKey = await hmacSha1(this.config.secretAccessKey, keyTime); const stringToSign = `sha1\n${keyTime}\n${await hmacSha1('', httpString)}\n`; const signature = await hmacSha1(signKey, stringToSign)
-    const authorization = `q-sign-algorithm=sha1&q-ak=${this.config.accessKeyId}&q-sign-time=${keyTime}&q-key-time=${keyTime}&q-header-list=${headerList}&q-url-param-list=${params.map(([name]) => name).join(';')}&q-signature=${signature}`
+    const uri = this.uri(key); const params = Object.entries(query).sort(([a], [b]) => a.localeCompare(b)); const paramText = params.map(([name, value]) => `${cosEncode(name.toLowerCase())}=${cosEncode(value)}`).join('&')
+    const headers = [['host', this.host], ...(contentType ? [['content-type', contentType] as [string, string]] : [])].sort(([a], [b]) => a.localeCompare(b)); const headerText = headers.map(([name, value]) => `${name}=${cosEncode(value)}`).join('&'); const headerList = headers.map(([name]) => name).join(';')
+    const httpString = `${method.toLowerCase()}\n/${key}\n${paramText}\n${headerText}\n`; const signKey = await hmacSha1(this.config.secretAccessKey, keyTime); const stringToSign = `sha1\n${keyTime}\n${await sha1(httpString)}\n`; const signature = await hmacSha1(signKey, stringToSign)
+    const authorization = `q-sign-algorithm=sha1&q-ak=${this.config.accessKeyId}&q-sign-time=${keyTime}&q-key-time=${keyTime}&q-header-list=${headerList}&q-url-param-list=${params.map(([name]) => name.toLowerCase()).join(';')}&q-signature=${signature}`
     const url = new URL(`${this.baseUrl}${uri}`); for (const [name, value] of params) url.searchParams.set(name, value)
     const response = await fetch(url, {
       method,

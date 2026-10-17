@@ -140,7 +140,9 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
       if (adapter) providers.push({ id: config.id?.trim() || `provider-${index + 1}`, config, adapter, primary: config.primary === true })
     }
     if (!providers.length) return null
-    const schedule = c.executionCtx?.waitUntil ? (task: Promise<void>) => c.executionCtx.waitUntil(task) : undefined
+    // Hono throws when executionCtx is accessed outside Workers (Node/tests).
+    let schedule: ((task: Promise<void>) => void) | undefined
+    try { const ctx = c.executionCtx; if (ctx?.waitUntil) schedule = (task) => ctx.waitUntil(task) } catch { /* Node has no background execution context. */ }
     return new StoragePool(providers, settings.storage.syncMode, schedule)
   }
   const storageObjectUrl = async (c: any, key: string) => {
@@ -851,9 +853,14 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const requestedProviders = Array.isArray(storage.providers) && storage.providers.length ? storage.providers : [storage]
     if (requestedProviders.length < 1 || requestedProviders.length > 12) return c.json({ error: { code: 'INVALID_SETTINGS', message: 'Storage providers must contain between 1 and 12 entries' } }, 400)
     const currentProviders = new Map(current.storage.providers.map((provider) => [provider.id, provider]))
+    // Apply changed primary form fields without undoing independent JSON edits.
+    const primaryFields = ['provider', 'endpoint', 'region', 'bucket', 'accessKeyId', 'secretAccessKey', 'publicBaseUrl', 'pathPrefix'] as const
+    const formChanges = Object.fromEntries(primaryFields.filter((key) => storage[key] !== undefined && storage[key] !== current.storage[key] && (administrator.role === 'root' || !['accessKeyId', 'secretAccessKey'].includes(key))).map((key) => [key, storage[key]]))
+    const primaryIndex = requestedProviders.findIndex((item) => item.primary && item.enabled !== false)
+    const editedPrimaryIndex = primaryIndex >= 0 ? primaryIndex : requestedProviders.findIndex((item) => item.enabled !== false)
     const storageProviders = requestedProviders.map((item: any, index: number) => {
       const existing = currentProviders.get(String(item?.id || ''))
-      const normalized = normalizeStorageProvider(item, existing, index)
+      const normalized = normalizeStorageProvider(index === editedPrimaryIndex ? { ...item, ...formChanges } : item, existing, index)
       if (administrator.role !== 'root') { normalized.accessKeyId = existing?.accessKeyId || ''; normalized.secretAccessKey = existing?.secretAccessKey || '' }
       return normalized
     })
@@ -1211,7 +1218,8 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const settings = await getSiteSettings(c)
     if (!settings.storage.directUpload.enabled || !settings.storage.directUpload.roles.includes(account.role)) return c.json({ error: { code: 'DIRECT_UPLOAD_UNAVAILABLE', message: 'Direct uploads are not enabled for this account' } }, 403)
     const storage = await getStorage(c)
-    if (!storage?.createUploadUrl) return c.json({ error: { code: 'DIRECT_UPLOAD_UNAVAILABLE', message: 'The configured storage does not support direct uploads' } }, 409)
+    const uploadAdapter = storage instanceof StoragePool ? storage.primary : storage
+    if (!uploadAdapter?.createUploadUrl) return c.json({ error: { code: 'DIRECT_UPLOAD_UNAVAILABLE', message: 'The primary storage does not support direct uploads. Select a configured Tencent COS provider as primary; R2 binding and local disk do not provide signed upload URLs.' } }, 409)
     const body = await c.req.json().catch(() => null) as { filename?: string; size?: number; contentType?: string; purpose?: string; projectSlug?: string } | null
     const purpose = body?.purpose === 'project-file' ? 'project-file' : 'account'
     const filename = String(body?.filename || '').trim().slice(0, 255)
@@ -1229,7 +1237,7 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
     const contentType = String(body?.contentType || 'application/octet-stream').slice(0, 200)
     const storageKey = `direct/${id}`
     let uploadUrl: string
-    try { uploadUrl = await storage.createUploadUrl(storageKey, contentType, filename, settings.storage.directUpload.ttlSeconds) } catch { return c.json({ error: { code: 'DIRECT_UPLOAD_UNAVAILABLE', message: 'The configured storage does not support direct uploads' } }, 409) }
+    try { uploadUrl = await uploadAdapter.createUploadUrl(storageKey, contentType, filename, settings.storage.directUpload.ttlSeconds) } catch { return c.json({ error: { code: 'DIRECT_UPLOAD_SIGNING_FAILED', message: 'Failed to sign the upload URL. Check the primary storage credentials and endpoint.' } }, 502) }
     await getAuthStore(c).setAppSetting(`direct_upload:${id}`, JSON.stringify({ id, accountId: account.id, filename, size, contentType, purpose, projectSlug, storageKey, expiresAt }))
     const origin = new URL(c.env?.PUBLIC_BASE_URL || c.req.url).origin
     return c.json({ uploadId: id, uploadUrl, method: 'PUT', expiresAt, completeUrl: new URL(`/api/v1/storage/direct-uploads/${id}/complete`, origin).href }, 201)

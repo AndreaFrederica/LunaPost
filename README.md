@@ -114,6 +114,8 @@ GET  /api/v1/admin/storage/sync?key=publish/example/…/file.jar
 
 同步记录保存在站点设置中，包含每个镜像的 `synced`/`failed` 状态和时间。私有桶请留空 `publicBaseUrl`，下载接口会返回对象存储的短期签名地址，文件字节不会经过 Worker。
 
+浏览器直传目前支持腾讯 COS，必须将配置完整的 COS 设为**主存储**，并在直传设置中启用相应用户组。R2 binding 和本地磁盘不提供预签名上传地址。COS 桶保持私有即可；桶的 CORS 规则需允许站点来源（例如 `https://lunapost.sirrus.cc`）、`PUT` 方法和 `Content-Type` 请求头。浏览器向 COS 上传，本站仅签发 URL 并通过 HEAD 确认上传完成。`DIRECT_UPLOAD_UNAVAILABLE` 表示角色未开放直传或主存储不支持；`DIRECT_UPLOAD_SIGNING_FAILED` 表示生成签名失败，此时前端不会自动退回经 Worker 上传。后台主存储表单的修改会同步保存到主存储条目；多存储 JSON 中独立修改的镜像仍会保留。
+
 ## 账户与权限
 
 登录使用 HS256 JWT：浏览器侧保存在 HttpOnly Cookie，API 客户端也可以用登录响应中的 `accessToken` 走 `Authorization: Bearer <token>`。JWT 过期后，只要长期 Session 仍有效，`GET /api/v1/me` 会自动续发短期令牌。
@@ -249,6 +251,17 @@ java -javaagent:authlib-injector.jar=https://example.com/api/ygg/meta -jar serve
 ```
 
 服务端仍应设置 `online-mode=true`，由 authlib-injector 接管认证。`/api/ygg/server-config` 会返回 metadata 地址、Java Agent 参数、服务端属性和当前启用的上游列表。后台上游的 `baseUrl` 应指向 Yggdrasil 服务根地址；需要拆分路由时可分别填写 `authBaseUrl`、`sessionBaseUrl`、`profileBaseUrl`、`nameLookupBaseUrl`。上游不可用时会继续尝试下一项，全部失败才返回认证失败。
+
+例如，同时接受 LittleSkin 和正版玩家，可以在后台填写类似配置（正版的 `hasJoined`、档案和名称查询走 Mojang，玩家登录仍由官方启动器完成）：
+
+```json
+[
+  { "id": "mojang", "name": "Mojang", "sessionBaseUrl": "https://sessionserver.mojang.com", "profileBaseUrl": "https://sessionserver.mojang.com", "nameLookupBaseUrl": "https://api.mojang.com", "enabled": true, "priority": 10 },
+  { "id": "littleskin", "name": "LittleSkin", "baseUrl": "https://littleskin.cn/csl", "enabled": true, "priority": 20 }
+]
+```
+
+官方 `authserver.mojang.com` 已不再提供可供代理代填的账号密码登录，因此不要把正版密码提交给本站；正版启动器完成登录后，服务端的 `hasJoined` 会自动依次查询已配置的上游。
 
 ## 内容审核与站点设置
 

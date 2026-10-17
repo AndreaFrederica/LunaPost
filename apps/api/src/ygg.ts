@@ -25,7 +25,7 @@ const upstreamBase = (upstream: YggUpstream, field: keyof YggUpstream) => String
 const upstreamUrl = (upstream: YggUpstream, field: keyof YggUpstream, path: string) => `${upstreamBase(upstream, field)}/${path.replace(/^\/+/, '')}`
 const upstreamId = (upstream: YggUpstream, index = 0) => String(upstream.id || `upstream-${index + 1}`)
 
-const readJsonResponse = async (response: Response) => {
+const readJsonResponse = async (response: Response): Promise<{ response: Response; payload: any }> => {
   const payload = await response.json().catch(() => null)
   return { response, payload }
 }
@@ -53,14 +53,24 @@ export function registerYgg(app: Hono<any>, getStore: (c: any) => AccountStore, 
   }
   const upstreamProfilesByName = async (c: any, names: string[]): Promise<any[]> => {
     const upstreams = enabledUpstreams(await settingsFor(c))
+    const result: any[] = []
+    let remaining = [...new Set(names.map((name) => name.trim()).filter(Boolean))]
     for (const upstream of upstreams) {
       const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 4_000)
       try {
-        const response = await fetch(upstreamUrl(upstream, 'nameLookupBaseUrl', 'api/profiles/minecraft'), { method: 'POST', signal: controller.signal, headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(names) })
-        if (response.ok) { const payload = await response.json() as unknown; return Array.isArray(payload) ? payload : [] }
+        let response = await fetch(upstreamUrl(upstream, 'nameLookupBaseUrl', 'api/profiles/minecraft'), { method: 'POST', signal: controller.signal, headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(remaining) })
+        if (!response.ok) response = await fetch(upstreamUrl(upstream, 'nameLookupBaseUrl', 'profiles/minecraft'), { method: 'POST', signal: controller.signal, headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(remaining) })
+        if (response.ok) {
+          const payload = await response.json() as unknown
+          if (Array.isArray(payload)) {
+            for (const item of payload) if (item && typeof item.name === 'string' && !result.some((known) => known.name?.toLowerCase() === item.name.toLowerCase())) result.push(item)
+            remaining = remaining.filter((name) => !result.some((item) => item.name?.toLowerCase() === name.toLowerCase()))
+            if (!remaining.length) break
+          }
+        }
       } catch { /* try the next mirror */ } finally { clearTimeout(timeout) }
     }
-    return []
+    return result
   }
   const findByName = async (store: AccountStore, name: string) => {
     const accounts = await store.listAccounts()
@@ -112,13 +122,15 @@ export function registerYgg(app: Hono<any>, getStore: (c: any) => AccountStore, 
     const origin = new URL(c.req.url).origin
     return c.json({ meta: { implementationName: 'Andrea Modpost Yggdrasil', implementationVersion: '0.2.0', serverName: 'Andrea Modpost', feature: { noProfileKey: true, legacySkinDomains: [] } }, skinDomains: [], signaturePublickey: c.env?.YGG_TEXTURE_PUBLIC_KEY || null, services: { authserver: `${origin}/api/ygg/authserver`, sessionserver: `${origin}/api/ygg/sessionserver`, profileserver: `${origin}/api/ygg/api` } }, 200, { 'Cache-Control': 'no-store' })
   })
-  app.get('/api/ygg/server-config', async (c) => {
+  const serverConfig = async (c: any) => {
     if (!(await settingsFor(c)).ygg?.enabled) return error(c, 403, 'Ygg service disabled')
     const origin = new URL(c.req.url).origin
     const metadataUrl = `${origin}/api/ygg/meta`
     return c.json({ metadataUrl, authlibInjector: { metadataUrl, javaAgent: `-javaagent:authlib-injector.jar=${metadataUrl}` }, serverProperties: { 'online-mode': 'true', 'prevent-proxy-connections': 'false' }, forwarding: { mode: 'federated', localAccounts: Boolean((await settingsFor(c)).ygg?.allowLocalAccounts), upstreams: enabledUpstreams(await settingsFor(c)).map((item, index) => ({ id: upstreamId(item, index), name: item.name || upstreamId(item, index), priority: Number(item.priority ?? 0) })) } }, 200, { 'Cache-Control': 'no-store' })
-  })
-  app.get('/api/ygg/config', async (c) => c.redirect('/api/ygg/server-config', 307))
+  }
+  app.get('/api/ygg/server-config', serverConfig)
+  app.get('/api/ygg/config', serverConfig)
+  app.get('/api/ygg/server', serverConfig)
   app.post('/api/ygg/authserver/authenticate', async (c) => {
     if (!allowed(`auth:${requestKey(c)}`, 10)) return error(c, 429, 'Too many authentication attempts')
     if (!(await settingsFor(c)).ygg?.enabled) return error(c, 403, 'Ygg service disabled')
