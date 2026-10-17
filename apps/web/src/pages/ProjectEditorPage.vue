@@ -1,14 +1,20 @@
 <template>
   <q-page class="page-shell project-editor-page q-py-xl">
-    <AppPageHeader :eyebrow="t('projectEditor.eyebrow')" :title="isNew ? t('projectEditor.newProject') : t('projectEditor.editProject')" :description="t('projectEditor.subtitle')">
-      <template #actions><q-btn flat icon="arrow_back" :label="t('projectEditor.backAdmin')" to="/admin" /></template>
-    </AppPageHeader>
-    <AppNotice v-if="error" tone="error" class="q-mb-md">{{ error }}</AppNotice>
-    <div v-if="uploadActive" class="q-mb-md">
-      <div class="row justify-between text-caption text-grey-7 q-mb-xs"><span>{{ t('projectEditor.uploadProgress', { name: uploadLabel }) }}</span><span>{{ uploadProgress }}%</span></div>
-      <q-linear-progress rounded size="8px" color="primary" track-color="grey-3" :value="uploadProgress / 100" />
-    </div>
-    <q-form @submit.prevent="save">
+    <div class="project-editor-layout">
+      <div class="project-editor-heading">
+        <AppPageHeader :eyebrow="t('projectEditor.eyebrow')" :title="isNew ? t('projectEditor.newProject') : t('projectEditor.editProject')" :description="t('projectEditor.subtitle')">
+        </AppPageHeader>
+      </div>
+      <div class="project-editor-page-actions">
+        <q-btn flat icon="arrow_back" :label="t('projectEditor.backAdmin')" to="/admin" />
+      </div>
+      <section class="project-editor-main">
+        <AppNotice v-if="error" tone="error" class="q-mb-md">{{ error }}</AppNotice>
+        <div v-if="uploadActive" class="q-mb-md">
+          <div class="row justify-between text-caption text-grey-7 q-mb-xs"><span>{{ t('projectEditor.uploadProgress', { name: uploadLabel }) }}</span><span>{{ uploadProgress }}%</span></div>
+          <q-linear-progress rounded size="8px" color="primary" track-color="grey-3" :value="uploadProgress / 100" />
+        </div>
+        <q-form @submit.prevent="save">
       <q-card flat bordered class="editor-shell">
         <q-tabs v-model="activeTab" inline-label mobile-arrows outside-arrows class="editor-tabs" active-color="primary" indicator-color="primary">
           <q-tab name="basic" icon="info" :label="t('projectEditor.tabBasic')" /><q-tab name="gallery" icon="photo_library" :label="t('projectEditor.tabGallery')" /><q-tab name="licenses" icon="gavel" :label="t('projectEditor.license')" /><q-tab name="content" icon="article" :label="t('projectEditor.tabContentLinks')" /><q-tab name="versions" icon="inventory_2" :label="t('projectEditor.tabVersionsFiles')" /><q-tab name="delivery" icon="public" :label="t('projectEditor.tabDelivery')" /><q-tab v-if="!isNew" name="members" icon="group" :label="t('projectEditor.tabMembers')" />
@@ -256,14 +262,26 @@
           <FormActions class="editor-action-bar__actions"><q-btn flat :label="t('projectEditor.cancel')" to="/admin" /><q-btn color="primary" type="submit" :loading="saving" :label="isNew ? t('projectEditor.createProject') : t('projectEditor.saveChanges')" /></FormActions>
         </div>
       </div>
-    </q-form>
+        </q-form>
+      </section>
+      <aside class="project-preview-panel">
+        <div class="project-preview-heading">
+          <q-icon name="visibility" size="20px" class="project-preview-heading__icon" />
+          <div>
+            <div class="project-preview-heading__title text-weight-bold">{{ t('projectEditor.pagePreview') }}</div>
+            <div class="project-preview-heading__hint text-caption">{{ t('projectEditor.pagePreviewHint') }}</div>
+          </div>
+        </div>
+        <ProjectPage :preview-project="previewProject" :preview-members="members" preview />
+      </aside>
+    </div>
   </q-page>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import type { CdnRule, FileRecord, LicenseRecord, ProjectLink, Version } from '@andrea/contracts'
+import type { CdnRule, FileRecord, LicenseRecord, Project, ProjectLink, Version } from '@andrea/contracts'
 import { getProject } from '../lib/api'
 import { createProject, updateProject, inviteProjectMember, listProjectMembers, removeProjectMember, type ProjectMember } from '../lib/admin'
 import { listOrganizations, searchUsers, type UserSearchResult } from '../lib/account'
@@ -271,6 +289,7 @@ import { useAuthStore } from '../stores/auth'
 import CodeEditor from '../components/CodeEditor.vue'
 import DependencyEditor from '../components/DependencyEditor.vue'
 import DependencyPanel from '../components/DependencyPanel.vue'
+import ProjectPage from './ProjectPage.vue'
 import FileButton from '../components/FileButton.vue'
 import StringOptionSelect from '../components/StringOptionSelect.vue'
 import AppNotice from '../components/AppNotice.vue'
@@ -280,11 +299,12 @@ import FormGrid from '../components/FormGrid.vue'
 import FormItemCard from '../components/FormItemCard.vue'
 import FormSection from '../components/FormSection.vue'
 import SectionHeading from '../components/SectionHeading.vue'
-import { projectSchema } from '@andrea/contracts'
+import { versionSchema } from '@andrea/contracts'
 import { useI18n } from '../i18n'
 import { uploadMultipart } from '../lib/uploads'
 
 const { t, locale, roleLabel, versionTypeLabel } = useI18n(); const route = useRoute(); const router = useRouter(); const auth = useAuthStore(); const saving = ref(false); const error = ref(''); const jsonError = ref(''); const uploadActive = ref(false); const uploadProgress = ref(0); const uploadLabel = ref('')
+const previewStats = ref({ downloads: 0, followers: 0 })
 const isNew = computed(() => route.path === '/admin/projects/new' || route.params.slug === 'new'); const activeTab = ref<'basic' | 'gallery' | 'licenses' | 'content' | 'versions' | 'delivery' | 'members'>('basic'); const versionMode = ref<'visual' | 'source'>('visual'); const visualVersions = ref<Version[]>([]); const versionsJson = ref('[]')
 const versionTypes = computed(() => [{ label: t('project.versionType.release'), value: 'release' }, { label: t('project.versionType.beta'), value: 'beta' }, { label: t('project.versionType.alpha'), value: 'alpha' }]); const fileTypes = computed(() => [{ label: t('projectEditor.fileMod'), value: 'mod' }, { label: t('projectEditor.resourcePack'), value: 'required-resource-pack' }, { label: t('projectEditor.optionalResourcePack'), value: 'optional-resource-pack' }, { label: t('projectEditor.sourceArchive'), value: 'source-jar' }, { label: t('projectEditor.otherFile'), value: 'unknown' }]); const sourceTypes = computed(() => [{ label: t('projectEditor.githubRelease'), value: 'github_release' }, { label: t('projectEditor.customHttp'), value: 'custom_http' }, { label: t('project.sourceManaged'), value: 'managed' }])
 const types = computed(() => [{ label: t('projectEditor.fileMod'), value: 'mod' }, { label: t('projectEditor.modpack'), value: 'modpack' }, { label: t('projectEditor.resourcePack'), value: 'resourcepack' }, { label: t('projectEditor.shader'), value: 'shader' }, { label: t('discover.plugins'), value: 'plugin' }, { label: t('discover.tools'), value: 'tool' }]); const environmentTypes = computed(() => [{ label: t('common.required'), value: 'required' }, { label: t('common.optional'), value: 'optional' }, { label: t('common.unsupported'), value: 'unsupported' }, { label: t('common.unknown'), value: 'unknown' }]); const statusOptions = computed(() => [{ label: t('status.approved'), value: 'approved' }, { label: t('status.pending'), value: 'pending' }, { label: t('status.draft'), value: 'draft' }, { label: t('status.archived'), value: 'archived' }])
@@ -299,7 +319,69 @@ const projectLoaders = computed<string[]>({
 })
 const gameVersionOptions = computed(() => [...new Set([...projectGameVersions.value, ...visualVersions.value.flatMap((version) => version.gameVersions)])].sort((a, b) => b.localeCompare(a, undefined, { numeric: true })))
 const loaderOptions = computed(() => [...new Set([...projectLoaders.value, ...visualVersions.value.flatMap((version) => [...version.loaders, ...(version.loaderBridges ?? []).flatMap((bridge) => [bridge.fromLoader, bridge.toLoader])])])].filter(Boolean).sort((a, b) => a.localeCompare(b)))
-const previewProject = computed(() => { const result = projectSchema.safeParse({ ...form, id: form.id || form.slug, loaders: form.loaders.split(',').map(s => s.trim()), gameVersions: form.gameVersions.split(',').map(s => s.trim()), categories: [], keywords: [], iconUrls: [], gallery: [], versions: visualVersions.value, repositoryUrl: undefined, iconUrl: undefined, sourceUrl: undefined, issuesUrl: undefined, discordUrl: undefined, wikiUrl: undefined, donationUrls: [] }); return result.success ? result.data : null })
+const isWebUrl = (value: string) => { try { return ['http:', 'https:'].includes(new URL(value).protocol) } catch { return false } }
+const isAssetUrl = (value: string) => value.startsWith('/') || isWebUrl(value)
+const previewVersions = computed<Version[]>(() => {
+  if (versionMode.value === 'visual') return visualVersions.value
+  try {
+    const result = versionSchema.array().safeParse(JSON.parse(versionsJson.value))
+    return result.success ? result.data : visualVersions.value
+  } catch {
+    return visualVersions.value
+  }
+})
+const previewProject = computed<Project>(() => {
+  const donations = csv(form.donationUrls).map((item) => {
+    const [platform, ...urlParts] = item.split('=')
+    return { platform: platform.trim(), url: urlParts.join('=').trim() }
+  }).filter((item) => item.platform && isWebUrl(item.url))
+  const links = customLinks.value.map((link) => ({ ...link, label: link.label.trim(), url: link.url.trim(), icon: link.icon?.trim() || 'link', group: link.group?.trim() || undefined })).filter((link) => link.label && isWebUrl(link.url))
+  const currentGallery = galleryUrls.value.length ? galleryUrls.value : csv(form.gallery)
+
+  return {
+    id: form.id || form.slug || 'project-preview',
+    slug: form.slug || 'project-preview',
+    ownerId: form.ownerId || undefined,
+    ownerType: form.ownerId ? 'organization' : 'account',
+    title: form.title || t('projectEditor.newProject'),
+    type: form.type as Project['type'],
+    description: form.description,
+    body: form.body,
+    categories: csv(form.categories),
+    keywords: csv(form.keywords),
+    clientSide: form.clientSide as Project['clientSide'],
+    serverSide: form.serverSide as Project['serverSide'],
+    status: form.status as Project['status'],
+    featured: form.featured,
+    downloads: previewStats.value.downloads,
+    followers: previewStats.value.followers,
+    iconUrl: isAssetUrl(form.iconUrl) ? form.iconUrl : undefined,
+    iconUrls: csv(form.iconUrls).filter(isAssetUrl),
+    repositoryUrl: isWebUrl(form.repositoryUrl) ? form.repositoryUrl : undefined,
+    sourceUrl: isWebUrl(form.sourceUrl) ? form.sourceUrl : undefined,
+    issuesUrl: isWebUrl(form.issuesUrl) ? form.issuesUrl : undefined,
+    discordUrl: isWebUrl(form.discordUrl) ? form.discordUrl : undefined,
+    cdnRules: cdnRules.value,
+    donationUrls: donations,
+    links,
+    homepageHtml: form.homepageHtml.trim() ? form.homepageHtml : undefined,
+    wikiHtml: form.wikiHtml.trim() ? form.wikiHtml : undefined,
+    wikiUrl: isWebUrl(form.wikiUrl) ? form.wikiUrl : undefined,
+    gallery: currentGallery.filter(isWebUrl),
+    license: form.license.trim() || undefined,
+    licenses: licenses.value.filter((license) => license.name.trim() || license.url || license.text).map((license) => ({
+      ...license,
+      name: license.name.trim() || t('projectEditor.license'),
+      spdx: license.spdx?.trim() || undefined,
+      url: license.url && isWebUrl(license.url) ? license.url.trim() : undefined,
+      fileName: license.fileName?.trim() || undefined,
+      text: license.text || undefined,
+    })),
+    loaders: projectLoaders.value,
+    gameVersions: projectGameVersions.value,
+    versions: previewVersions.value,
+  }
+})
 const csv = (value: unknown) => String(value).split(',').map((item) => item.trim()).filter(Boolean); const metadataDrafts = ref<Record<string, string>>({}); const metadataText = (file: FileRecord) => metadataDrafts.value[file.id] ?? JSON.stringify(file.metadata ?? {}, null, 2); const updateMetadata = (file: FileRecord, value: string) => { metadataDrafts.value[file.id] = value; try { const parsed = JSON.parse(value); if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) file.metadata = parsed } catch { /* preserve the draft until it becomes valid JSON */ } }
 watch(versionMode, (mode, previous) => { if (mode === 'source' && previous === 'visual') versionsJson.value = JSON.stringify(visualVersions.value, null, 2); if (mode === 'visual' && previous === 'source') { try { const parsed = JSON.parse(versionsJson.value); if (Array.isArray(parsed)) { visualVersions.value = parsed; jsonError.value = '' } } catch { jsonError.value = t('projectEditor.invalidSourceJson') } } })
 const useTemplate = () => { versionsJson.value = JSON.stringify([{ id: `${form.slug || 'project'}-1.0.0`, version: '1.0.0', type: 'release', gameVersions: csv(form.gameVersions), loaders: csv(form.loaders), featured: true, status: 'listed', dependencies: [], changelog: '', publishedAt: new Date().toISOString(), files: [] }], null, 2) }
@@ -309,9 +391,130 @@ const addSource = (file: FileRecord) => { file.sources.push({ id: `source-${Date
 const uploadSelected = async (value: File | File[] | null, file: FileRecord) => { const selected = Array.isArray(value) ? value[0] : value; if (!selected) return; uploadActive.value = true; uploadProgress.value = 0; uploadLabel.value = selected.name; try { const result = await uploadMultipart<{ name: string; size: number; source: FileRecord['sources'][number] }>(`/api/v1/projects/${encodeURIComponent(String(route.params.slug))}/files`, selected, { direct: { purpose: 'project-file', projectSlug: String(route.params.slug) }, onProgress: (progress) => { uploadProgress.value = progress }, errorMessage: t('projectEditor.uploadFailed') }); file.name = result.name; file.size = result.size; file.sources = [result.source, ...file.sources.filter((source) => source.id !== result.source.id)] } catch (cause) { error.value = cause instanceof Error ? cause.message : t('projectEditor.fileUploadFailed') } finally { uploadActive.value = false; uploadProgress.value = 0; uploadLabel.value = '' } }
 const uploadAsset = async (value: File | File[] | null, target: 'icon' | 'gallery') => { const selected = Array.isArray(value) ? value[0] : value; if (!selected) return; uploadActive.value = true; uploadProgress.value = 0; uploadLabel.value = selected.name; try { const result = await uploadMultipart<{ url: string }>('/api/v1/account/uploads', selected, { direct: { purpose: 'account' }, onProgress: (progress) => { uploadProgress.value = progress }, errorMessage: t('projectEditor.uploadFailed') }); if (target === 'icon') form.iconUrl = result.url; else form.gallery = `${form.gallery}${form.gallery ? ', ' : ''}${result.url}` } catch (cause) { error.value = cause instanceof Error ? cause.message : t('projectEditor.imageUploadFailed') } finally { uploadActive.value = false; uploadProgress.value = 0; uploadLabel.value = '' } }
 const uploadGalleryFiles = async (value: File | File[] | null) => { const files = Array.isArray(value) ? value : value ? [value] : []; if (!files.length) return; uploadActive.value = true; try { for (const selected of files) { uploadProgress.value = 0; uploadLabel.value = selected.name; try { const result = await uploadMultipart<{ url: string }>('/api/v1/account/uploads', selected, { direct: { purpose: 'account' }, onProgress: (progress) => { uploadProgress.value = progress }, errorMessage: t('projectEditor.uploadFailed') }); galleryUrls.value.push(result.url) } catch (cause) { error.value = cause instanceof Error ? cause.message : t('projectEditor.imageUploadFailed') } } } finally { uploadActive.value = false; uploadProgress.value = 0; uploadLabel.value = '' } }
-const load = async () => { await auth.load(); if (!auth.account) return router.replace('/auth'); if (!auth.canPublish) return router.replace('/'); organizations.value = (await listOrganizations()).organizations; if (isNew.value) { form.ownerId = ''; return } try { const project = await getProject(String(route.params.slug)); Object.assign(form, { id: project.id, title: project.title, slug: project.slug, type: project.type, ownerId: project.ownerType === 'organization' ? (project.ownerId ?? '') : '', description: project.description, body: project.body ?? '', categories: (project.categories ?? []).join(', '), keywords: (project.keywords ?? []).join(', '), clientSide: project.clientSide ?? 'unknown', serverSide: project.serverSide ?? 'unknown', status: project.status ?? 'approved', featured: project.featured ?? false, iconUrl: project.iconUrl ?? '', iconUrls: (project.iconUrls ?? []).join(', '), repositoryUrl: project.repositoryUrl ?? '', sourceUrl: project.sourceUrl ?? '', issuesUrl: project.issuesUrl ?? '', discordUrl: project.discordUrl ?? '', donationUrls: (project.donationUrls ?? []).map((item) => `${item.platform}=${item.url}`).join(', '), license: project.license ?? '', wikiUrl: project.wikiUrl ?? '', wikiHtml: project.wikiHtml ?? '', gallery: '', homepageHtml: project.homepageHtml ?? '', loaders: project.loaders.join(', '), gameVersions: project.gameVersions.join(', ') }); galleryUrls.value = [...(project.gallery ?? [])]; licenses.value = structuredClone(project.licenses ?? (project.license ? [{ id: 'legacy-license', name: project.license, spdx: project.license, fileName: 'LICENSE', text: '' }] : [])); customLinks.value = structuredClone(project.links ?? []); cdnRules.value = structuredClone(project.cdnRules ?? []); visualVersions.value = structuredClone(project.versions).map((version) => ({ ...version, files: version.files.map((file) => ({ ...file, fileType: file.fileType ?? 'unknown', metadata: file.metadata ?? {}, sources: file.sources.length ? file.sources : [{ id: `source-${file.id}`, kind: 'custom_http' as const, region: 'GLOBAL', url: 'https://example.invalid/download', priority: 0 }] })) })); versionsJson.value = JSON.stringify(project.versions, null, 2); members.value = (await listProjectMembers(String(route.params.slug))).members } catch { error.value = t('projectEditor.readFailed') } }
+const load = async () => { await auth.load(); if (!auth.account) return router.replace('/auth'); if (!auth.canPublish) return router.replace('/'); organizations.value = (await listOrganizations()).organizations; if (isNew.value) { form.ownerId = ''; return } try { const project = await getProject(String(route.params.slug)); previewStats.value = { downloads: project.downloads ?? 0, followers: project.followers ?? 0 }; Object.assign(form, { id: project.id, title: project.title, slug: project.slug, type: project.type, ownerId: project.ownerType === 'organization' ? (project.ownerId ?? '') : '', description: project.description, body: project.body ?? '', categories: (project.categories ?? []).join(', '), keywords: (project.keywords ?? []).join(', '), clientSide: project.clientSide ?? 'unknown', serverSide: project.serverSide ?? 'unknown', status: project.status ?? 'approved', featured: project.featured ?? false, iconUrl: project.iconUrl ?? '', iconUrls: (project.iconUrls ?? []).join(', '), repositoryUrl: project.repositoryUrl ?? '', sourceUrl: project.sourceUrl ?? '', issuesUrl: project.issuesUrl ?? '', discordUrl: project.discordUrl ?? '', donationUrls: (project.donationUrls ?? []).map((item) => `${item.platform}=${item.url}`).join(', '), license: project.license ?? '', wikiUrl: project.wikiUrl ?? '', wikiHtml: project.wikiHtml ?? '', gallery: '', homepageHtml: project.homepageHtml ?? '', loaders: project.loaders.join(', '), gameVersions: project.gameVersions.join(', ') }); galleryUrls.value = [...(project.gallery ?? [])]; licenses.value = structuredClone(project.licenses ?? (project.license ? [{ id: 'legacy-license', name: project.license, spdx: project.license, fileName: 'LICENSE', text: '' }] : [])); customLinks.value = structuredClone(project.links ?? []); cdnRules.value = structuredClone(project.cdnRules ?? []); visualVersions.value = structuredClone(project.versions).map((version) => ({ ...version, files: version.files.map((file) => ({ ...file, fileType: file.fileType ?? 'unknown', metadata: file.metadata ?? {}, sources: file.sources.length ? file.sources : [{ id: `source-${file.id}`, kind: 'custom_http' as const, region: 'GLOBAL', url: 'https://example.invalid/download', priority: 0 }] })) })); versionsJson.value = JSON.stringify(project.versions, null, 2); members.value = (await listProjectMembers(String(route.params.slug))).members } catch { error.value = t('projectEditor.readFailed') } }
 const save = async () => { error.value = ''; jsonError.value = ''; if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(form.slug)) { error.value = t('projectEditor.invalidSlug'); activeTab.value = 'basic'; return } let versions: unknown = versionMode.value === 'visual' ? visualVersions.value : undefined; if (versionMode.value === 'source') { try { versions = JSON.parse(versionsJson.value); if (!Array.isArray(versions)) throw new Error() } catch { jsonError.value = t('projectEditor.invalidJsonArray'); activeTab.value = 'versions'; return } } const donationUrls = csv(form.donationUrls).map((item) => { const [platform, ...urlParts] = item.split('='); return { platform: platform.trim(), url: urlParts.join('=').trim() } }).filter((item) => item.platform && item.url); const links = customLinks.value.map((link) => ({ ...link, label: link.label.trim(), url: link.url.trim(), icon: link.icon?.trim() || 'link', group: link.group?.trim() || undefined })).filter((link) => link.label && link.url); const project = { id: form.id || form.slug, slug: form.slug, ownerType: form.ownerId ? 'organization' : 'account', ...(form.ownerId ? { ownerId: form.ownerId } : {}), title: form.title.trim(), type: form.type, description: form.description.trim(), body: form.body.trim(), categories: csv(form.categories), keywords: csv(form.keywords), clientSide: form.clientSide, serverSide: form.serverSide, status: form.status, featured: form.featured, ...(form.iconUrl.trim() ? { iconUrl: form.iconUrl.trim() } : {}), iconUrls: csv(form.iconUrls), ...(form.repositoryUrl.trim() ? { repositoryUrl: form.repositoryUrl.trim() } : {}), ...(form.sourceUrl.trim() ? { sourceUrl: form.sourceUrl.trim() } : {}), ...(form.issuesUrl.trim() ? { issuesUrl: form.issuesUrl.trim() } : {}), ...(form.discordUrl.trim() ? { discordUrl: form.discordUrl.trim() } : {}), donationUrls, links, cdnRules: cdnRules.value, ...(form.license.trim() ? { license: form.license.trim() } : {}), licenses: licenses.value.filter((license) => license.name.trim() || license.url || license.text).map((license) => ({ ...license, name: license.name.trim() || t('projectEditor.license'), spdx: license.spdx?.trim() || undefined, url: license.url?.trim() || undefined, fileName: license.fileName?.trim() || undefined, text: license.text || undefined })), ...(form.wikiUrl.trim() ? { wikiUrl: form.wikiUrl.trim() } : {}), ...(form.wikiHtml.trim() ? { wikiHtml: form.wikiHtml } : {}), gallery: galleryUrls.value.length ? galleryUrls.value.filter(Boolean) : csv(form.gallery), ...(form.homepageHtml.trim() ? { homepageHtml: form.homepageHtml } : {}), loaders: csv(form.loaders), gameVersions: csv(form.gameVersions), versions }; saving.value = true; try { const result = isNew.value ? await createProject(project) : await updateProject(String(route.params.slug), project); await router.push(`/projects/${result.project.slug}`) } catch (cause) { error.value = cause instanceof Error ? cause.message : t('projectEditor.saveFailed') } finally { saving.value = false } }
 const loadUserOptions = async (query = '') => { usersLoading.value = true; try { userOptions.value = (await searchUsers(query, String(route.params.slug))).users } catch { userOptions.value = [] } finally { usersLoading.value = false } }; const filterUsers = async (value: string, update: (callback: () => void) => void) => { usersLoading.value = true; try { const result = await searchUsers(value.trim(), String(route.params.slug)); update(() => { userOptions.value = result.users }) } catch { update(() => { userOptions.value = [] }) } finally { usersLoading.value = false } }
 const invite = async () => { const email = inviteEmail.value.trim().toLowerCase(); inviteMessage.value = ''; if (!email) return; inviting.value = true; try { await inviteProjectMember(String(route.params.slug), email, inviteRole.value); inviteMessage.value = t('projectEditor.inviteSent', { email }); inviteEmail.value = '' } catch (cause) { error.value = cause instanceof Error ? cause.message : t('projectEditor.inviteFailed') } finally { inviting.value = false } }; const removeMember = async (accountId: string) => { if (!window.confirm(t('projectEditor.confirmRemoveMember'))) return; try { await removeProjectMember(String(route.params.slug), accountId); members.value = members.value.filter((member) => member.accountId !== accountId) } catch (cause) { error.value = cause instanceof Error ? cause.message : t('projectEditor.removeMemberFailed') } }
 onMounted(load)
 </script>
+
+<style scoped>
+.project-editor-page.page-shell {
+  width: min(1800px, calc(100% - 32px));
+}
+
+.project-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 24px;
+  row-gap: 24px;
+}
+
+.project-editor-heading {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+
+.project-editor-heading :deep(.app-page-header) {
+  margin-bottom: 0;
+}
+
+.project-editor-page-actions {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.project-editor-main {
+  grid-column: 1;
+  grid-row: 2;
+  align-self: stretch;
+  min-width: 0;
+}
+
+.project-preview-panel {
+  grid-column: 2;
+  grid-row: 2;
+  align-self: stretch;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  background: var(--app-surface);
+}
+
+.project-preview-heading {
+  box-sizing: border-box;
+  min-height: 59px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-surface-muted);
+}
+
+.project-preview-heading__icon,
+.project-preview-heading__title {
+  color: var(--app-primary-strong);
+}
+
+.project-preview-heading__hint {
+  color: var(--app-muted);
+}
+
+.project-preview-panel :deep(.project-page--preview) {
+  min-height: 0;
+  background: transparent;
+}
+
+.project-preview-panel :deep(.project-shell) {
+  width: 100%;
+  margin: 0;
+  padding: 0 16px 20px;
+}
+
+@media (max-width: 1050px) {
+  .project-editor-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto;
+  }
+
+  .project-editor-heading {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .project-editor-page-actions {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .project-editor-main {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .project-preview-panel {
+    grid-column: 1;
+    grid-row: 4;
+  }
+}
+
+@media (max-width: 600px) {
+  .project-editor-page.page-shell {
+    width: calc(100% - 24px);
+  }
+
+  .project-preview-panel {
+    border-radius: 12px;
+  }
+}
+</style>

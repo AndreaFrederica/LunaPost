@@ -161,6 +161,8 @@ const messages: Record<string, string> = {
     "projectEditor.newProject": "新建项目",
     "projectEditor.editProject": "编辑项目",
     "projectEditor.subtitle": "分区编辑项目资料、版本文件和下载分发策略。",
+    "projectEditor.pagePreview": "项目页面预览",
+    "projectEditor.pagePreviewHint": "预览会随编辑内容即时更新，展示访客看到的页面。",
     "projectEditor.backAdmin": "返回后台",
     "projectEditor.tabBasic": "基本信息",
     "projectEditor.tabGallery": "画廊",

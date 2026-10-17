@@ -161,6 +161,8 @@ const messages: Record<string, string> = {
     "projectEditor.newProject": "New project",
     "projectEditor.editProject": "Edit project",
     "projectEditor.subtitle": "Edit project details, releases, files, and delivery rules in sections.",
+    "projectEditor.pagePreview": "Live page preview",
+    "projectEditor.pagePreviewHint": "This updates as you edit and shows the page visitors will see.",
     "projectEditor.backAdmin": "Back to admin",
     "projectEditor.tabBasic": "Basic information",
     "projectEditor.tabGallery": "Gallery",
