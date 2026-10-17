@@ -17,7 +17,7 @@
         <q-tab-panels v-model="activeTab" animated keep-alive class="editor-panels">
           <q-tab-panel name="basic">
             <FormSection :title="t('projectEditor.identity')" :description="t('projectEditor.identityDesc')">
-              <FormGrid>
+              <FormGrid :columns="1">
                 <q-input v-model="form.title" outlined :label="t('projectEditor.projectName')" required />
                 <q-input v-model="form.slug" outlined :label="t('common.slug')" :hint="t('projectEditor.slugHint')" required :disable="!isNew" />
                 <q-select v-if="isNew && organizations.length" v-model="form.ownerId" outlined :label="t('projectEditor.owner')" emit-value map-options :options="ownerOptions" />
@@ -26,7 +26,7 @@
             </FormSection>
 
             <FormSection :title="t('projectEditor.introIcon')" :description="t('projectEditor.introIconDesc')">
-              <FormGrid>
+              <FormGrid :columns="1">
                 <q-input v-model="form.description" class="form-grid__full" outlined type="textarea" autogrow :label="t('projectEditor.projectDescription')" required />
                 <q-input v-model="form.iconUrl" outlined :label="t('projectEditor.mainIconUrl')" />
                 <FileButton :label="t('projectEditor.uploadIcon')" accept="image/*" @select="files => uploadAsset(files, 'icon')" />
@@ -35,11 +35,11 @@
             </FormSection>
 
             <FormSection :title="t('projectEditor.compatibilitySources')" :description="t('projectEditor.compatibilitySourcesDesc')">
-              <FormGrid>
+              <FormGrid :columns="1">
                 <q-input v-model="form.license" outlined :label="t('projectEditor.licenseIdentifier')" :placeholder="t('projectEditor.legacyLicensePlaceholder')" />
                 <q-input v-model="form.repositoryUrl" outlined :label="t('projectEditor.repositoryUrl')" type="url" />
-                <StringOptionSelect v-model="projectLoaders" :options="loaderOptions" multiple :label="t('projectEditor.loaders')" :hint="t('projectEditor.loaderSelectHint')" empty-:label="t('projectEditor.loaderAddHint')" />
-                <StringOptionSelect v-model="projectGameVersions" :options="gameVersionOptions" multiple :label="t('projectEditor.gameVersions')" :hint="t('projectEditor.gameVersionSelectHint')" empty-:label="t('projectEditor.gameVersionAddHint')" />
+                <StringOptionSelect v-model="projectLoaders" :options="loaderOptions" multiple :label="t('projectEditor.loaders')" :hint="t('projectEditor.loaderSelectHint')" :empty-label="t('projectEditor.loaderAddHint')" />
+                <StringOptionSelect v-model="projectGameVersions" :options="gameVersionOptions" multiple :label="t('projectEditor.gameVersions')" :hint="t('projectEditor.gameVersionSelectHint')" :empty-label="t('projectEditor.gameVersionAddHint')" />
               </FormGrid>
             </FormSection>
           </q-tab-panel>
@@ -74,12 +74,12 @@
                   <template #actions>
                     <q-btn flat dense round color="negative" icon="delete" :aria-label="t('projectEditor.deleteLicense', { name: license.name || index + 1 })" @click="licenses.splice(index, 1)" />
                   </template>
-                  <FormGrid>
+                  <FormGrid :columns="1">
                     <q-input v-model="license.name" outlined :label="t('projectEditor.name')" />
                     <q-input v-model="license.spdx" outlined :label="t('projectEditor.spdx')" placeholder="MIT / LGPL-3.0" />
                     <q-input v-model="license.fileName" outlined :label="t('projectEditor.filename')" placeholder="LICENSE" />
                     <q-input v-model="license.url" outlined :label="t('projectEditor.licenseUrl')" type="url" />
-                    <CodeEditor :model-value="license.text ?? ''" class="form-grid__full" language="plaintext" :label="`${license.name || t('projectEditor.license')} ${t('projectEditor.originalText')}`" height="220px" @update:model-value="value => license.text = value" />
+                    <CodeEditor :model-value="license.text ?? ''" class="form-grid__full" language="plaintext" :label="`${license.name || t('projectEditor.license')} ${t('projectEditor.originalText')}`" height="320px" @update:model-value="value => license.text = value" />
                   </FormGrid>
                 </FormItemCard>
               </div>
@@ -88,18 +88,18 @@
 
           <q-tab-panel name="content">
             <FormSection :title="t('projectEditor.contentCategories')" :description="t('projectEditor.contentCategoriesDesc')">
-              <FormGrid>
+              <FormGrid :columns="1">
                 <q-input v-model="form.categories" outlined :label="t('projectEditor.categories')" :hint="t('projectEditor.categoriesExample')" />
                 <q-input v-model="form.keywords" outlined :label="t('projectEditor.keywords')" :hint="t('projectEditor.keywordsHint')" />
                 <q-select v-model="form.clientSide" outlined emit-value map-options :label="t('discover.client')" :options="environmentTypes" />
                 <q-select v-model="form.serverSide" outlined emit-value map-options :label="t('discover.server')" :options="environmentTypes" />
                 <q-select v-model="form.status" outlined emit-value map-options :label="t('projectEditor.reviewStatus')" :options="statusOptions" />
                 <q-toggle v-model="form.featured" dense :label="t('projectEditor.featuredProject')" color="primary" />
-                <CodeEditor v-model="form.body" class="form-grid__full" language="markdown" :label="t('projectEditor.projectBody')" height="420px" />
+                <CodeEditor v-model="form.body" class="form-grid__full" language="markdown" :label="t('projectEditor.projectBody')" height="320px" />
               </FormGrid>
             </FormSection>
             <FormSection :title="t('projectEditor.linksCommunity')" :description="t('projectEditor.linksCommunityDesc')">
-              <FormGrid>
+              <FormGrid :columns="1">
                 <q-input v-model="form.sourceUrl" outlined :label="t('projectEditor.sourceUrl')" type="url" />
                 <q-input v-model="form.issuesUrl" outlined :label="t('projectEditor.issuesUrl')" type="url" />
                 <q-input v-model="form.discordUrl" outlined :label="t('projectEditor.discordUrl')" type="url" />
@@ -114,7 +114,7 @@
                     <div v-else class="form-item-list">
                       <FormItemCard v-for="(link, linkIndex) in customLinks" :key="link.id || linkIndex" :title="link.label || t('projectEditor.linkNumber', { number: linkIndex + 1 })" :description="link.url || undefined">
                         <template #actions><q-btn flat dense round icon="delete" color="negative" :aria-label="t('projectEditor.deleteLink', { name: link.label || linkIndex + 1 })" @click="customLinks.splice(linkIndex, 1)" /></template>
-                        <FormGrid :columns="2">
+                        <FormGrid :columns="1">
                           <q-input v-model="link.label" outlined :label="t('projectEditor.displayName')" />
                           <q-input v-model="link.url" outlined label="URL" type="url" />
                           <q-input v-model="link.icon" outlined :label="t('projectEditor.iconName')" :hint="t('common.materialIcon')" />
@@ -143,14 +143,14 @@
                 <q-expansion-item v-for="(version, versionIndex) in visualVersions" :key="version.id" class="editor-expansion-item version-editor-item" expand-separator>
                 <template #header><q-item-section><q-item-label>{{ version.version || t('projectEditor.unnamedVersion') }}</q-item-label><q-item-label caption>{{ versionTypeLabel(version.type) }} · {{ t('common.filesCount', { count: version.files.length }) }}</q-item-label></q-item-section><q-item-section side><q-btn flat round dense icon="delete" color="negative" @click.stop="visualVersions.splice(versionIndex, 1)" /></q-item-section></template>
                 <q-card-section>
-                  <FormGrid>
+                  <FormGrid :columns="1">
                     <q-input v-model="version.version" outlined :label="t('projectEditor.versionNumber')" />
                     <q-select v-model="version.type" outlined :label="t('projectEditor.releaseType')" emit-value map-options :options="versionTypes" />
-                    <StringOptionSelect v-model="version.gameVersions" :options="gameVersionOptions" multiple :label="t('projectEditor.gameVersions')" :hint="t('projectEditor.gameVersionMultiHint')" empty-:label="t('projectEditor.gameVersionAddHint')" />
-                    <StringOptionSelect v-model="version.loaders" :options="loaderOptions" multiple :label="t('projectEditor.loaders')" :hint="t('projectEditor.loaderMultiHint')" empty-:label="t('projectEditor.loaderAddHint')" />
+                    <StringOptionSelect v-model="version.gameVersions" :options="gameVersionOptions" multiple :label="t('projectEditor.gameVersions')" :hint="t('projectEditor.gameVersionMultiHint')" :empty-label="t('projectEditor.gameVersionAddHint')" />
+                    <StringOptionSelect v-model="version.loaders" :options="loaderOptions" multiple :label="t('projectEditor.loaders')" :hint="t('projectEditor.loaderMultiHint')" :empty-label="t('projectEditor.loaderAddHint')" />
                     <q-input v-model="version.publishedAt" outlined :label="t('projectEditor.publishedAt')" :hint="t('projectEditor.isoDateOptional')" />
-                    <CodeEditor :model-value="version.description ?? ''" class="form-grid__full" language="markdown" :label="t('projectEditor.versionDescription')" height="240px" @update:model-value="value => version.description = value" />
-                    <CodeEditor :model-value="version.changelog ?? ''" class="form-grid__full" language="markdown" :label="t('projectEditor.changelog')" height="300px" @update:model-value="value => version.changelog = value" />
+                    <CodeEditor :model-value="version.description ?? ''" class="form-grid__full" language="markdown" :label="t('projectEditor.versionDescription')" height="320px" @update:model-value="value => version.description = value" />
+                    <CodeEditor :model-value="version.changelog ?? ''" class="form-grid__full" language="markdown" :label="t('projectEditor.changelog')" height="320px" @update:model-value="value => version.changelog = value" />
                   </FormGrid>
                   <DependencyEditor v-model="version.dependencies" :version="version" />
                   <SectionHeading :title="t('projectEditor.filesMirrors')">
@@ -159,7 +159,7 @@
                   <div class="form-item-list">
                     <FormItemCard v-for="(file, fileIndex) in version.files" :key="file.id" :title="file.name || t('projectEditor.unnamedFile')">
                     <template #actions><q-btn flat round dense icon="delete" color="negative" :aria-label="t('projectEditor.deleteFile', { name: file.name || fileIndex + 1 })" @click="version.files.splice(fileIndex, 1)" /></template>
-                    <FormGrid>
+                    <FormGrid :columns="1">
                       <q-input v-model="file.id" outlined :label="t('projectEditor.fileId')" />
                       <q-input v-model="file.name" outlined :label="t('projectEditor.filename')" />
                       <q-select v-model="file.fileType" outlined emit-value map-options :label="t('projectEditor.fileType')" :options="fileTypes" />
@@ -168,7 +168,7 @@
                       <q-input v-model="file.sha1" outlined label="SHA-1" />
                       <q-input v-model="file.sha512" outlined label="SHA-512" />
                       <q-input v-model="file.description" class="form-grid__full" outlined type="textarea" autogrow :label="t('projectEditor.fileDescription')" />
-                      <CodeEditor :model-value="metadataText(file)" class="form-grid__full" language="json" :label="t('projectEditor.metadataJson')" height="280px" @update:model-value="(value) => updateMetadata(file, value)" />
+                      <CodeEditor :model-value="metadataText(file)" class="form-grid__full" language="json" :label="t('projectEditor.metadataJson')" height="320px" @update:model-value="(value) => updateMetadata(file, value)" />
                     </FormGrid>
                     <SectionHeading :title="t('projectEditor.mirrorAddress')" :description="t('projectEditor.mirrorManualHint')">
                       <template #actions>
@@ -179,7 +179,7 @@
                     <div class="form-item-list">
                       <FormItemCard v-for="(source, sourceIndex) in file.sources" :key="source.id" :title="t('projectEditor.downloadMirror')" :description="source.id">
                       <template #actions><q-btn flat round dense icon="delete" color="negative" :disable="file.sources.length <= 1" :aria-label="t('projectEditor.deleteMirror', { id: source.id })" @click="file.sources.splice(sourceIndex, 1)" /></template>
-                      <FormGrid :columns="3">
+                      <FormGrid :columns="1">
                           <q-input v-model="source.id" outlined :label="t('projectEditor.mirrorId')" />
                           <q-select v-model="source.kind" outlined emit-value map-options :label="t('projectEditor.type')" :options="sourceTypes" />
                           <q-input v-model="source.region" outlined :label="t('projectEditor.region')" hint="GLOBAL/CN/EU" />
@@ -196,7 +196,7 @@
               <DependencyPanel v-if="previewProject" :project="previewProject" preview />
               <q-btn outline color="primary" icon="add" :label="t('projectEditor.addVersion')" class="q-mt-md" @click="addVersion" />
             </div>
-            <div v-else><q-btn flat color="primary" :label="t('projectEditor.fillVersionTemplate')" @click="useTemplate" /><CodeEditor v-model="versionsJson" class="q-mt-sm" language="json" :label="t('projectEditor.versionsJson')" height="480px" :error="Boolean(jsonError)" :error-message="jsonError" /></div>
+            <div v-else><q-btn flat color="primary" :label="t('projectEditor.fillVersionTemplate')" @click="useTemplate" /><CodeEditor v-model="versionsJson" class="q-mt-sm" language="json" :label="t('projectEditor.versionsJson')" height="320px" :error="Boolean(jsonError)" :error-message="jsonError" /></div>
             </FormSection>
           </q-tab-panel>
 
@@ -206,7 +206,7 @@
               <div class="form-item-list">
                 <FormItemCard v-for="(rule, index) in cdnRules" :key="rule.id" :title="rule.label || t('projectEditor.cdnRuleNumber', { number: index + 1 })" :description="rule.id">
                   <template #actions><q-btn flat round dense icon="delete" color="negative" :aria-label="t('projectEditor.deleteCdnRule', { id: rule.id })" @click="cdnRules.splice(index, 1)" /></template>
-                  <FormGrid>
+                  <FormGrid :columns="1">
                     <q-input v-model="rule.id" outlined :label="t('projectEditor.ruleId')" />
                     <q-input v-model="rule.label" outlined :label="t('projectEditor.name')" />
                     <q-input v-model="rule.region" outlined :label="t('projectEditor.region')" />
@@ -224,7 +224,7 @@
             <FormSection :title="t('projectEditor.members')" :description="t('projectEditor.membersDesc')">
               <FormItemCard :title="t('projectEditor.inviteMember')" :description="t('projectEditor.searchAccountsHint')">
                 <q-form @submit.prevent="invite">
-                  <FormGrid :columns="3">
+                  <FormGrid :columns="1">
                     <q-select v-model="inviteEmail" class="form-grid__wide member-search-select" outlined stack-label use-input fill-input hide-selected emit-value map-options input-debounce="250" :label="t('projectEditor.searchMember')" :placeholder="t('projectEditor.emailIdSearchHint')" :options="userOptions" option-label="email" option-value="email" :disable="inviting" :loading="usersLoading" autocomplete="off" @focus="loadUserOptions()" @filter="filterUsers">
                       <template #option="scope">
                         <q-item v-bind="scope.itemProps"><q-item-section><q-item-label>{{ scope.opt.email }}</q-item-label><q-item-label caption>@{{ scope.opt.id }} · {{ roleLabel(scope.opt.role) }}</q-item-label></q-item-section></q-item>

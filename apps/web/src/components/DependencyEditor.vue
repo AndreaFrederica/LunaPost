@@ -8,7 +8,7 @@
         <div class="form-item-list">
           <FormItemCard v-for="(bridge, index) in version.loaderBridges" :key="index" :title="t('dependencyEditor.bridgeCombination')" :description="bridge.viaProjectId || t('dependencyEditor.noMiddlewareProjectSelected')">
             <template #actions><q-btn flat round dense icon="delete" color="negative" :aria-label="t('dependencyEditor.removeBridge')" @click="version.loaderBridges?.splice(index, 1)" /></template>
-            <FormGrid>
+            <FormGrid :columns="1">
               <StringOptionSelect v-model="bridge.fromLoader" :options="loaderOptions" :label="t('dependencyEditor.nativeLoader')" :hint="t('dependencyEditor.selectOrTypeALoader')" :empty-label="t('dependencyEditor.typeALoaderAndPressEnterToAdd')" />
               <StringOptionSelect v-model="bridge.toLoader" :options="loaderOptions" :label="t('dependencyEditor.targetLoader')" :hint="t('dependencyEditor.selectOrTypeALoader')" :empty-label="t('dependencyEditor.typeALoaderAndPressEnterToAdd')" />
               <q-input v-model="bridge.fromLoaderVersion" class="form-grid__full" outlined :label="t('dependencyEditor.sourceLoaderAPIVersionProvidedByBridgeOptional')" />
@@ -29,7 +29,7 @@
 
     <FormItemCard v-for="(dependency, index) in modelValue" :key="dependency.id || index" :title="dependency.external ? t('dependencyEditor.externalDependency') : t('dependencyEditor.localDependency')" :description="dependency.external ? `${dependency.external.provider} · ${dependency.external.projectId || t('dependencyEditor.unboundProject')}` : dependency.projectId || t('dependencyEditor.noProjectSelected')">
       <template #actions><q-btn flat round dense icon="delete" color="negative" :aria-label="t('dependencyEditor.removeDependency')" @click="emit('update:modelValue', modelValue.filter((_, itemIndex) => itemIndex !== index))" /></template>
-      <FormGrid>
+      <FormGrid :columns="1">
         <q-select class="form-grid__full" :model-value="dependency.external?.provider || 'local'" :options="[{ label: t('dependencyEditor.localProject'), value: 'local' }, { label: 'Modrinth', value: 'modrinth' }, { label: 'CurseForge', value: 'curseforge' }]" emit-value map-options outlined :label="t('dependencyEditor.dependencySource')" @update:model-value="value => setSource(dependency, value)" />
         <template v-if="dependency.external">
           <q-input v-model="dependency.external.projectId" outlined :label="dependency.external.provider === 'modrinth' ? t('dependencyEditor.mrProjectIDOrSlugLookupToBind') : t('dependencyEditor.cfNumericProjectID')" @update:model-value="() => { if (dependency.external) dependency.external.versionId = undefined }" />
@@ -62,7 +62,7 @@
         </FormGrid>
         <div v-if="imported.length" class="form-item-list">
           <FormItemCard v-for="item in imported" :key="item.modId" :title="item.modId" :description="item.rawRange">
-            <FormGrid :columns="2">
+            <FormGrid :columns="1">
               <q-input class="form-grid__wide" v-model="item.projectId" outlined :label="t('dependencyEditor.localProjectID')" />
               <FormActions><q-btn outline color="primary" icon="add" :disable="!item.projectId" @click="appendImported(item)" /></FormActions>
             </FormGrid>

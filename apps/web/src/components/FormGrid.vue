@@ -16,6 +16,7 @@ withDefaults(defineProps<{ columns?: 1 | 2 | 3 }>(), { columns: 2 })
 :slotted(.q-field) { width: 100%; min-width: 0; }
 :slotted(.form-grid__full) { grid-column: 1 / -1; min-width: 0; }
 :slotted(.form-grid__wide) { grid-column: span 2; min-width: 0; }
+.form-grid--1 :slotted(.form-grid__wide) { grid-column: 1 / -1; }
 @media (max-width: 900px) {
   .form-grid--3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

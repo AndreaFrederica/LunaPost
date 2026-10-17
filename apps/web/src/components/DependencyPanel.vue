@@ -1,14 +1,14 @@
 <template>
   <section class="q-my-lg">
     <h2 class="text-h6">{{ t('dependencyPanel.dependenciesAndInstallationPlan') }}</h2>
-    <div class="row q-col-gutter-sm">
-      <q-select v-model="versionId" class="col-12 col-md-4" :options="project.versions.map(v => ({ label: `${v.version} · ${v.loaders.join('/')} · ${v.gameVersions.join('/')}`, value: v.id }))" emit-value map-options outlined dense :label="t('dependencyPanel.release')" />
-      <q-select v-model="loader" class="col-6 col-md-2" :options="[...(version?.loaders || []),...(version?.loaderBridges || []).map(b => b.toLoader)]" outlined dense :label="t('dependencyPanel.loader')" />
-      <q-select v-model="gameVersion" class="col-6 col-md-2" :options="version?.gameVersions || []" outlined dense :label="t('dependencyPanel.gameVersion')" />
-      <q-select v-model="side" class="col-6 col-md-2" :options="sideOptions" emit-value map-options outlined dense :label="t('dependencyPanel.side')" />
-      <q-input v-model="loaderVersion" class="col-6 col-md-2" outlined dense :label="t('dependencyPanel.loaderVersion')" />
-      <q-input v-model="installed" class="col-12 col-md-6" outlined dense :label="t('dependencyPanel.installedVersionIDsCommaSeparated')" />
-      <q-input v-model="features" class="col-12 col-md-6" outlined dense :label="t('dependencyPanel.enabledFeaturesCommaSeparated')" />
+    <div class="row" :class="preview ? 'q-col-gutter-md' : 'q-col-gutter-sm'">
+      <q-select v-model="versionId" :class="preview ? 'col-12' : 'col-12 col-md-4'" :options="project.versions.map(v => ({ label: `${v.version} · ${v.loaders.join('/')} · ${v.gameVersions.join('/')}`, value: v.id }))" emit-value map-options outlined :dense="!preview" :label="t('dependencyPanel.release')" />
+      <q-select v-model="loader" :class="preview ? 'col-12' : 'col-6 col-md-2'" :options="[...(version?.loaders || []),...(version?.loaderBridges || []).map(b => b.toLoader)]" outlined :dense="!preview" :label="t('dependencyPanel.loader')" />
+      <q-select v-model="gameVersion" :class="preview ? 'col-12' : 'col-6 col-md-2'" :options="version?.gameVersions || []" outlined :dense="!preview" :label="t('dependencyPanel.gameVersion')" />
+      <q-select v-model="side" :class="preview ? 'col-12' : 'col-6 col-md-2'" :options="sideOptions" emit-value map-options outlined :dense="!preview" :label="t('dependencyPanel.side')" />
+      <q-input v-model="loaderVersion" :class="preview ? 'col-12' : 'col-6 col-md-2'" outlined :dense="!preview" :label="t('dependencyPanel.loaderVersion')" />
+      <q-input v-model="installed" :class="preview ? 'col-12' : 'col-12 col-md-6'" outlined :dense="!preview" :label="t('dependencyPanel.installedVersionIDsCommaSeparated')" />
+      <q-input v-model="features" :class="preview ? 'col-12' : 'col-12 col-md-6'" outlined :dense="!preview" :label="t('dependencyPanel.enabledFeaturesCommaSeparated')" />
     </div>
     <q-list separator class="q-my-md"><q-item v-for="(d,i) in version?.dependencies" :key="d.id || i"><q-item-section>
       <q-item-label>{{ relation(d.dependencyType) }} · {{ d.external ? `${d.external.provider}: ${d.external.projectId}` : d.projectId || d.versionId || d.fileName }}</q-item-label>
@@ -19,7 +19,7 @@
     <template v-if="result">
       <q-banner v-for="(p,i) in [...result.errors,...result.warnings]" :key="i" class="q-my-sm">{{ p.code }}: {{ p.message }} — {{ p.path.join(' → ') }}</q-banner>
       <q-tree v-if="tree.length" :nodes="tree" node-key="key" default-expand-all class="q-my-md" />
-      <q-list separator><q-item v-for="node in result.nodes" :key="node.versionId"><q-item-section><a v-if="node.externalUrl" :href="node.externalUrl" target="_blank" rel="noopener noreferrer">{{ node.title }} · {{ node.version }}</a><router-link v-else :to="`/projects/${node.slug}`">{{ node.title }} · {{ node.version }}</router-link><small v-if="node.bridge">{{ node.bridge.fromLoader }} → {{ node.bridge.toLoader }} · {{ node.bridge.viaProjectId }}</small></q-item-section><q-item-section side><q-select v-model="fileSelections[node.versionId]" :options="node.files.map(f => ({ label: f.name, value: f.id }))" emit-value map-options outlined dense :label="t('dependencyPanel.selectFile')" @update:model-value="resolve" /></q-item-section></q-item></q-list>
+      <q-list separator><q-item v-for="node in result.nodes" :key="node.versionId"><q-item-section><a v-if="node.externalUrl" :href="node.externalUrl" target="_blank" rel="noopener noreferrer">{{ node.title }} · {{ node.version }}</a><router-link v-else :to="`/projects/${node.slug}`">{{ node.title }} · {{ node.version }}</router-link><small v-if="node.bridge">{{ node.bridge.fromLoader }} → {{ node.bridge.toLoader }} · {{ node.bridge.viaProjectId }}</small></q-item-section><q-item-section side><q-select v-model="fileSelections[node.versionId]" :options="node.files.map(f => ({ label: f.name, value: f.id }))" emit-value map-options outlined :dense="!preview" :label="t('dependencyPanel.selectFile')" @update:model-value="resolve" /></q-item-section></q-item></q-list>
       <q-list><q-item v-for="edge in result.edges.filter(e => e.active && ['optional','recommended'].includes(e.dependency.dependencyType))" :key="edge.from + (edge.to || edge.dependency.id)"><q-item-section>{{ edge.from }} → {{ edge.to }} · {{ relation(edge.dependency.dependencyType) }}</q-item-section><q-item-section side><q-checkbox v-model="optional" :val="edge.dependency.id || edge.to" :label="t('dependencyPanel.install')" @update:model-value="resolve" /></q-item-section></q-item></q-list>
       <q-btn class="q-mt-sm" color="primary" icon="download" :disable="!result.installable || dirty" :label="t('dependencyPanel.exportInstallationPlan')" @click="download" />
     </template>
