@@ -5,6 +5,7 @@ const messages: Record<string, string> = {
     'nav.discover': '发现内容',
     'nav.host': '托管项目',
     'nav.api': '开发者 API',
+    'nav.about': '关于',
     'nav.account': '账户',
     'nav.admin': '管理后台',
     'nav.publish': '发布项目',

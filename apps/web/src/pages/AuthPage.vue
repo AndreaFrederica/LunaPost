@@ -1,6 +1,6 @@
 <template>
   <q-page class="page-shell q-py-xl">
-    <div class="auth-card q-mx-auto">
+    <div v-reveal class="auth-card q-mx-auto">
       <div class="text-overline text-primary">{{ t('auth.eyebrow') }}</div>
       <h1 class="text-h4 text-weight-bold q-mt-sm">{{ isRegister ? t('auth.registerTitle') : t('auth.signInTitle', { site: siteName }) }}</h1>
       <p class="text-grey-7">{{ t('auth.accountPurpose') }}</p>
@@ -31,6 +31,7 @@ import { getPublicRegistrationSettings, login, register } from '../lib/auth'
 import { siteName } from '../lib/site-settings'
 import { useI18n } from '../i18n'
 import { useAuthStore } from '../stores/auth'
+import { vReveal } from '../lib/scroll-reveal'
 
 const { t } = useI18n()
 

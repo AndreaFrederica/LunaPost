@@ -138,6 +138,7 @@ GET  /api/v1/admin/storage/sync?key=publish/example/…/file.jar
 | 项目编辑器 | `/admin/projects/new`、`/admin/projects/:slug/edit` |
 | 账户页 | `/account` |
 | 开发者 API 文档 | `/api` |
+| 关于本站（开源与部署说明） | `/about` |
 
 账户页可编辑公开资料、创建组织、创建/吊销 API Key（令牌只在创建时返回一次）、管理收藏夹与通知，以及绑定 Minecraft 档案。语言保存在 `localStorage` 的 `andrea-locale`，主题保存在 `andrea-theme`。
 
@@ -284,8 +285,10 @@ pnpm build:static
 ## 部署
 
 - **Node 自托管**：`pnpm build` 后运行 `@andrea/api` 的 Node 入口。账户持久化在 `AUTH_DB_PATH` 指向的 SQLite，文件存 `STORAGE_DIR`。生产环境请设置独立的 `JWT_SECRET`、HTTPS 与 `CORS_ORIGINS`。
-- **Cloudflare Workers**：`apps/api` 的 Worker 入口配合 D1 与 R2。D1/PostgreSQL 需依次应用 `migrations/0001_auth.sql` 至 `migrations/0009_ygg.sql`。
+- **Cloudflare Workers**：`apps/api` 的 Worker 入口配合 D1 与 R2。D1/PostgreSQL 需依次应用 `migrations/0001_auth.sql` 至 `migrations/0010_publish_tokens_uploads.sql`。
 - **本地 workerd**：见 [deploy/workerd/README.md](deploy/workerd/README.md)，先 `pnpm build:workerd` 生成 `deploy/workerd/worker.js` 再 `workerd serve config.capnp config`。
+
+站内的 `/about` 页面把这四种形态整理成可直接复制的命令清单，并说明开源许可与上线检查项；它不依赖 API，静态导出里同样可用。
 
 当前示例 Catalog 使用 GitHub Release URL 作为文件源；GitHub Release 自动同步建议通过仓库 Action 生成或更新 `catalog/catalog.json`。平台下载接口保持文件 id 不变，并按区域选择源。
 

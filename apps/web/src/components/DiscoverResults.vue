@@ -16,7 +16,7 @@
       </AppEmptyState>
     </TransitionGroup>
     <TransitionGroup v-if="!error && !loading && projects.length" key="results" tag="div" name="card-item" :class="viewMode === 'grid' ? 'project-grid' : 'project-list'" @pointermove="moveCardGlow" @pointerleave="clearCardGlow">
-      <article v-for="project in projects" :key="project.id" class="discover-card" @click="openProject(project.slug)">
+      <article v-for="(project, index) in projects" :key="project.id" v-reveal="index * 40" class="discover-card" @click="openProject(project.slug)">
         <div class="discover-card-icon" :class="{ 'has-image': project.iconUrl || project.iconUrls?.[0] }" :style="project.color ? { background: project.color } : undefined"><q-img v-if="project.iconUrl || project.iconUrls?.[0]" :src="project.iconUrl || project.iconUrls[0]" fit="cover" /><span v-else>{{ project.title.slice(0, 1).toUpperCase() }}</span></div>
         <div class="discover-card-content"><div class="discover-card-title"><h2>{{ project.title }}</h2><q-badge v-if="project.featured" color="amber-8" :label="t('discover.featured')" /><ProjectStatusBadge :status="project.status" /><span class="project-author">{{ project.slug }}</span></div><p>{{ project.description }}</p><div class="metadata-row"><q-chip v-for="tag in project.categories?.slice(0, 3)" :key="'cat-' + tag" dense class="metadata-chip category-chip">{{ categoryLabel(tag) }}</q-chip><q-chip v-for="loader in project.loaders?.slice(0, 3)" :key="'loader-' + loader" dense class="metadata-chip">{{ loader }}</q-chip><q-chip v-for="version in project.gameVersions?.slice(0, 2)" :key="'version-' + version" dense class="metadata-chip">{{ version }}</q-chip></div><div class="environment-row"><span><q-icon name="desktop_windows" /> {{ environmentLabel(project.clientSide) }}</span><span><q-icon name="dns" /> {{ environmentLabel(project.serverSide) }}</span><span v-if="project.license"><q-icon name="copyright" /> {{ project.license }}</span></div></div>
         <div class="discover-card-stats"><span><q-icon name="download" /> {{ formatNumber(project.downloads || 0) }}</span><span><q-icon name="favorite_border" /> {{ formatNumber(project.followers || 0) }}</span><span><q-icon name="inventory_2" /> {{ t('discover.versions', { count: project.versions?.length ?? 0 }) }}</span></div>
@@ -28,6 +28,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { vReveal } from '../lib/scroll-reveal'
 import { useRouter } from 'vue-router'
 import { useI18n } from '../i18n'
 import AppEmptyState from './AppEmptyState.vue'

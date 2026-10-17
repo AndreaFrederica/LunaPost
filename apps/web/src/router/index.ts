@@ -9,6 +9,7 @@ import ProjectEditorPage from '../pages/ProjectEditorPage.vue'
 import UserProfilePage from '../pages/UserProfilePage.vue'
 import OrganizationPage from '../pages/OrganizationPage.vue'
 import ApiDocsPage from '../pages/ApiDocsPage.vue'
+import AboutPage from '../pages/AboutPage.vue'
 import NotFoundPage from '../pages/NotFoundPage.vue'
 
 export default createRouter({
@@ -19,6 +20,7 @@ export default createRouter({
     { path: '/users/:id', component: UserProfilePage },
     { path: '/organizations/:slug', component: OrganizationPage },
     { path: '/api', component: ApiDocsPage },
+    { path: '/about', component: AboutPage },
     { path: '/auth', component: AuthPage },
     { path: '/setup', component: SetupPage },
     { path: '/admin', component: AdminPage },

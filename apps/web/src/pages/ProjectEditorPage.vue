@@ -15,7 +15,7 @@
           <q-linear-progress rounded size="8px" color="primary" track-color="grey-3" :value="uploadProgress / 100" />
         </div>
         <q-form @submit.prevent="save">
-      <q-card flat bordered class="editor-shell">
+      <q-card v-reveal flat bordered class="editor-shell">
         <q-tabs v-model="activeTab" inline-label mobile-arrows outside-arrows class="editor-tabs" active-color="primary" indicator-color="primary">
           <q-tab name="basic" icon="info" :label="t('projectEditor.tabBasic')" /><q-tab name="gallery" icon="photo_library" :label="t('projectEditor.tabGallery')" /><q-tab name="licenses" icon="gavel" :label="t('projectEditor.license')" /><q-tab name="content" icon="article" :label="t('projectEditor.tabContentLinks')" /><q-tab name="versions" icon="inventory_2" :label="t('projectEditor.tabVersionsFiles')" /><q-tab name="delivery" icon="public" :label="t('projectEditor.tabDelivery')" /><q-tab v-if="!isNew" name="members" icon="group" :label="t('projectEditor.tabMembers')" />
         </q-tabs>
@@ -259,7 +259,7 @@
       </div>
         </q-form>
       </section>
-      <aside class="project-preview-panel">
+      <aside v-reveal class="project-preview-panel">
         <div class="project-preview-heading">
           <q-icon name="visibility" size="20px" class="project-preview-heading__icon" />
           <div>
@@ -298,6 +298,7 @@ import SectionHeading from '../components/SectionHeading.vue'
 import { versionSchema } from '@andrea/contracts'
 import { useI18n } from '../i18n'
 import { uploadMultipart } from '../lib/uploads'
+import { vReveal } from '../lib/scroll-reveal'
 
 const { t, locale, roleLabel, versionTypeLabel } = useI18n(); const route = useRoute(); const router = useRouter(); const auth = useAuthStore(); const saving = ref(false); const error = ref(''); const jsonError = ref(''); const uploadActive = ref(false); const uploadProgress = ref(0); const uploadLabel = ref('')
 const previewStats = ref({ downloads: 0, followers: 0 })

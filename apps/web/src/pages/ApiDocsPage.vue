@@ -1,6 +1,6 @@
 <template>
   <q-page class="page-shell api-docs-page q-py-xl">
-    <div class="api-docs-hero">
+    <div v-reveal class="api-docs-hero">
       <div>
         <div class="text-overline text-secondary">{{ t('apiDocs.eyebrow', { site: siteName }) }}</div>
         <h1 class="text-h3 text-weight-bold q-my-sm">{{ t('apiDocs.title') }}</h1>
@@ -30,7 +30,7 @@
           <p v-if="downloadError" role="alert">{{ text(bi('文档导出失败，请重试。', 'Export failed. Please retry.')) }}</p>
           <a href="#reference" @click="navigateSection($event, 'reference')">{{ text(bi('跳到接口目录', 'Jump to endpoints')) }} →</a>
         </section>
-        <details v-for="guide in guides" :id="guide.id" :key="guide.id" v-animated-details class="api-docs-section api-guide" :open="guide.id === 'quickstart' || undefined">
+        <details v-for="guide in guides" :id="guide.id" :key="guide.id" v-reveal v-animated-details class="api-docs-section api-guide" :open="guide.id === 'quickstart' || undefined">
           <summary><h2>{{ text(guide.title) }}</h2><q-icon name="expand_more" aria-hidden="true" /></summary>
           <div class="api-guide-body">
             <p v-for="(paragraph, index) in guide.paragraphs" :key="index">{{ text(paragraph) }}</p>
@@ -38,7 +38,7 @@
             <ApiCodeBlock v-if="guide.code" :code="guide.code" />
           </div>
         </details>
-        <section id="reference" class="api-docs-section api-reference">
+        <section id="reference" v-reveal class="api-docs-section api-reference">
           <h2>{{ text(bi('可访问接口目录', 'Available endpoints')) }}</h2>
           <p>{{ text(bi('路径参数在 URL 中替换，? 标记可选字段。输出列是响应结构摘要；具体发布请求见上方示例。', 'Replace path parameters in the URL; ? marks optional fields. Outputs summarize response shapes; see the guides for complete publishing examples.')) }}</p>
           <div class="api-filters">
@@ -87,6 +87,7 @@ import { bi, searchEndpoints, type GroupId, type LocalizedText } from '../lib/ap
 import { useAuthStore } from '../stores/auth'
 import { getAccessToken } from '../lib/auth'
 import { prefersReducedMotion, setDetailsOpen, vAnimatedDetails } from '../lib/animated-details'
+import { vReveal } from '../lib/scroll-reveal'
 
 const { t, locale } = useI18n()
 const route = useRoute()

@@ -1,6 +1,6 @@
 <template>
   <q-page class="page-shell q-py-xl">
-    <div class="auth-card q-mx-auto">
+    <div v-reveal class="auth-card q-mx-auto">
       <div class="text-overline text-primary">{{ t('setup.eyebrow') }}</div>
       <h1 class="text-h4 text-weight-bold q-mt-sm">{{ t('setup.title') }}</h1>
       <p class="text-grey-7">{{ t('setup.subtitle') }}</p>
@@ -26,6 +26,7 @@ import { onMounted, ref } from 'vue'
 import { getSetupStatus, initialize, type SetupStatus } from '../lib/setup'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../i18n'
+import { vReveal } from '../lib/scroll-reveal'
 
 const { t } = useI18n()
 const status = ref<SetupStatus>()

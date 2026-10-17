@@ -5,6 +5,7 @@ const messages: Record<string, string> = {
     'nav.discover': 'Discover',
     'nav.host': 'Host a project',
     'nav.api': 'Developer API',
+    'nav.about': 'About',
     'nav.account': 'Account',
     'nav.admin': 'Admin',
     'nav.publish': 'Publish project',
