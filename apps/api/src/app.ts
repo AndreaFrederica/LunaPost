@@ -12,6 +12,7 @@ import { registerDownloads } from './downloads.js'
 import { R2Storage, StoragePool, TencentCosStorage, type StorageAdapter, type StorageProviderConfig, type StorageSyncResult } from './storage.js'
 import { registerYgg } from './ygg.js'
 import { registerMojang } from './mojang.js'
+import { buildDocumentation, documentationMarkdown } from './docs/documentation.js'
 
 export type AppEnv = {
   Bindings: {
@@ -419,6 +420,50 @@ export const createApp = (options: { authStore?: AccountStore; storage?: Storage
   app.get('/', (c) => c.json({ name: 'andrea-modpost-api', version: '0.1.0' }))
 
   app.get('/api/v1/health', (c) => c.json({ ok: true, service: 'api' }))
+
+  app.get('/api/v1/docs', async (c) => {
+    // Never cache role-dependent documents in the browser or at a shared edge.
+    c.header('Cache-Control', 'private, no-store, max-age=0')
+    c.header('CDN-Cache-Control', 'no-store')
+    c.header('Vary', 'Cookie, Authorization, Accept-Language')
+    const account = await getCurrentAccount(c)
+    const format = c.req.query('format') ?? 'json'
+    if (!['json', 'markdown'].includes(format)) return c.json({ error: { code: 'INVALID_FORMAT', message: 'Expected json or markdown' } }, 400)
+    const boundProject = (c as any).get('publishProjectSlug') as string | undefined
+    const requestedProject = c.req.query('project') || boundProject || null
+    if (boundProject && requestedProject !== boundProject) return c.json({ error: { code: 'FORBIDDEN', message: 'Project context is outside token scope' } }, 403)
+    let canEdit = Boolean(account && ['admin', 'root'].includes(account.role))
+    let canManage = canEdit
+    if (requestedProject || account?.role === 'developer') {
+      const catalog = await getCatalogFor(c)
+      const projects = requestedProject ? catalog.projects.filter(project => project.slug === requestedProject) : catalog.projects
+      canEdit = false
+      canManage = false
+      for (const project of projects) {
+        canEdit ||= Boolean(await canManageProject(c, project))
+        canManage ||= Boolean(await canAdminProject(c, project))
+        if (canEdit && canManage) break
+      }
+      // Hide even the existence of a project the caller cannot manage or edit.
+      if (requestedProject && !canEdit) return c.json({ error: { code: 'NOT_FOUND', message: 'Project documentation is not available' } }, 404)
+    }
+    const settings = await getSiteSettings(c)
+    const document = buildDocumentation(new URL(c.env?.PUBLIC_BASE_URL || c.req.url).origin, {
+      role: account?.role ?? 'guest',
+      scopes: (c as any).get('apiKeyScopes'),
+      project: requestedProject,
+      projectBound: Boolean(boundProject),
+      canEdit, canManage,
+      directUpload: Boolean(account && settings.storage.directUpload.enabled && settings.storage.directUpload.roles.includes(account.role)),
+      initialized: await getAuthStore(c).countAccounts() > 0,
+    })
+    if (format === 'markdown') {
+      c.header('Content-Type', 'text/markdown; charset=utf-8')
+      c.header('X-Content-Type-Options', 'nosniff')
+      return c.body(documentationMarkdown(document, c.req.query('lang') || c.req.header('accept-language') || 'zh-CN'))
+    }
+    return c.json(document)
+  })
 
   app.post('/api/v1/auth/register', async (c) => {
     const input = registerSchema.safeParse(await c.req.json().catch(() => null))

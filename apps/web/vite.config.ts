@@ -15,7 +15,8 @@ export default defineConfig({
   server: {
     port: 9000,
     proxy: {
-      '/api': 'http://localhost:8787',
+      // /api is the documentation page; only nested paths are backend requests.
+      '/api/': 'http://localhost:8787',
     },
   },
 })

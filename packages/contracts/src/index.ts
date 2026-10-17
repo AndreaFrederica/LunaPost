@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { validRange } from 'semver'
 export * from './dependencies.js'
+export type * from './api-docs.js'
 
 export const sourceSchema = z.object({
   id: z.string(),

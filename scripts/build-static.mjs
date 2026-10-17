@@ -13,11 +13,17 @@ const catalogBuild = spawn(command, ['catalog:build'], {
 
 catalogBuild.on('exit', (catalogCode) => {
   if (catalogCode !== 0) process.exit(catalogCode ?? 1)
-  const webBuild = spawn(command, ['--filter', '@andrea/web', 'build'], {
-    cwd: root,
-    env: { ...process.env, VITE_STATIC_MODE: 'true' },
-    shell: process.platform === 'win32',
-    stdio: 'inherit',
+  const documentationBuild = spawn(command, ['--filter', '@andrea/web', 'exec', 'tsx', '../../scripts/build-public-docs.mts'], {
+    cwd: root, env: process.env, shell: process.platform === 'win32', stdio: 'inherit',
   })
-  webBuild.on('exit', (webCode) => process.exit(webCode ?? 1))
+  documentationBuild.on('exit', (documentationCode) => {
+    if (documentationCode !== 0) process.exit(documentationCode ?? 1)
+    const webBuild = spawn(command, ['--filter', '@andrea/web', 'build'], {
+      cwd: root,
+      env: { ...process.env, VITE_STATIC_MODE: 'true' },
+      shell: process.platform === 'win32',
+      stdio: 'inherit',
+    })
+    webBuild.on('exit', (webCode) => process.exit(webCode ?? 1))
+  })
 })

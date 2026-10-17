@@ -204,6 +204,7 @@ export class MemoryAccountStore implements AccountStore {
   private readonly accounts = new Map<string, AccountRecord>()
   private readonly sessions = new Map<string, SessionRecord>()
   private readonly apiKeys = new Map<string, ApiKeyRecord>()
+  private readonly publishTokens = new Map<string, ProjectPublishToken>()
   private readonly projects = new Map<string, Project>()
   private readonly organizations = new Map<string, OrganizationRecord>()
   private readonly organizationMembers = new Map<string, { accountId: string; role: OrganizationMemberRole }>()
@@ -248,6 +249,7 @@ export class MemoryAccountStore implements AccountStore {
     const existed = this.accounts.delete(id)
     if (existed) for (const [key, session] of this.sessions) if (session.accountId === id) this.sessions.delete(key)
     if (existed) for (const [key, apiKey] of this.apiKeys) if (apiKey.accountId === id) this.apiKeys.delete(key)
+    if (existed) for (const [key, token] of this.publishTokens) if (token.accountId === id) this.publishTokens.delete(key)
     if (existed) for (const [key, favorite] of this.favorites) if (favorite.accountId === id) this.favorites.delete(key)
     if (existed) for (const [key, member] of this.projectMembers) if (member.accountId === id) this.projectMembers.delete(key)
     if (existed) for (const [key, member] of this.organizationMembers) if (member.accountId === id) this.organizationMembers.delete(key)
@@ -271,10 +273,10 @@ export class MemoryAccountStore implements AccountStore {
   async findApiKey(keyHash: string) {
     return [...this.apiKeys.values()].find((key) => key.keyHash === keyHash && !key.revokedAt) ?? null
   }
-  async createProjectPublishToken(token: ProjectPublishToken) { this.apiKeys.set(`publish:${token.id}`, token as unknown as ApiKeyRecord) }
-  async findProjectPublishToken(tokenHash: string) { return [...this.apiKeys.values()].find((key) => key.keyHash === tokenHash && !key.revokedAt && key.id.startsWith('publish:')) as unknown as ProjectPublishToken ?? null }
-  async listProjectPublishTokens(projectSlug: string) { return ([...this.apiKeys.values()] as unknown as ProjectPublishToken[]).filter((key) => key.id.startsWith('publish:') && key.projectSlug === projectSlug).map(({ tokenHash: _tokenHash, accountId: _accountId, ...key }) => key) }
-  async revokeProjectPublishToken(projectSlug: string, id: string) { const key = this.apiKeys.get(`publish:${id}`) as unknown as ProjectPublishToken | undefined; if (!key || key.projectSlug !== projectSlug || key.revokedAt) return false; key.revokedAt = new Date().toISOString(); return true }
+  async createProjectPublishToken(token: ProjectPublishToken) { this.publishTokens.set(token.id, token) }
+  async findProjectPublishToken(tokenHash: string) { return [...this.publishTokens.values()].find(token => token.tokenHash === tokenHash && !token.revokedAt) ?? null }
+  async listProjectPublishTokens(projectSlug: string) { return [...this.publishTokens.values()].filter(token => token.projectSlug === projectSlug).map(({ tokenHash: _tokenHash, accountId: _accountId, ...token }) => token) }
+  async revokeProjectPublishToken(projectSlug: string, id: string) { const token = this.publishTokens.get(id); if (!token || token.projectSlug !== projectSlug || token.revokedAt) return false; token.revokedAt = new Date().toISOString(); return true }
 
   async revokeApiKey(accountId: string, id: string) {
     const key = this.apiKeys.get(id)
